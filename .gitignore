@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# env
+.env
+.env*.local
+
+# database (SQLite, MVP only)
+prisma/dev.db
+prisma/dev.db-journal
+
+# 從 IG 下載的圖片（執行時產生）
+public/media/
+
+# 解析失敗時的除錯用 HTML
+debug_html/
+
+# misc
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts

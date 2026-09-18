@@ -1,0 +1,35 @@
+// Prisma schema — MVP 用 SQLite。
+// 之後要上雲端 Postgres（Supabase / Neon）時：
+//   1. 把 provider 改成 "postgresql"
+//   2. 把 .env 的 DATABASE_URL 換成雲端連線字串
+//   3. npx prisma db push
+// 程式碼完全不用改。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 使用者透過 LINE 分享進來的 Instagram 連結
+model SharedLink {
+  id         Int      @id @default(autoincrement())
+  url        String // 正規化後的 IG 連結
+  shortcode  String   @unique // IG 貼文/Reel 的代碼（網址裡 /p/XXXX/ 的 XXXX）
+  kind       String // "post" | "reel" | "tv" | "unknown"
+  sourceText String? // 使用者傳來的原始訊息全文
+  senderId   String? // LINE userId
+  senderName String? // LINE 顯示名稱（抓得到才有）
+  createdAt  DateTime @default(now())
+
+  // 從 IG embed 頁解析出來的內容（可能抓不到，皆可為空）
+  username    String? // 發文者帳號
+  caption     String? // 貼文文字內容
+  mediaPath   String? // 下載到本機的圖片/縮圖（/media/xxx.jpg）
+  isVideo     Boolean   @default(false) // Reels / 影片貼文
+  fetchStatus String? // null=還沒抓 | "ok" | "failed"
+  fetchedAt   DateTime?
+}
