@@ -3,28 +3,41 @@
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
 //   - "anthropic" : Claude API（需 ANTHROPIC_API_KEY）
 //   - "openai"    : OpenAI API（需 OPENAI_API_KEY）
-//   - "rules"     : 純關鍵字規則（不用金鑰，預設值）
-// 之後要換模型只要改 .env，不用動程式。
+//   - "rules"     : 純關鍵字規則（不用金鑰，保底 fallback）
+//
+// 核心流程（LLM 模式）：
+//   Step 1: analyzeIntent()  — 用 LLM 分析使用者語意，抽出場合/風格/預算/隱含條件
+//   Step 2: enrichUserMessage() — 把分析結果附在原始訊息後面
+//   Step 3: 帶著 enriched message + 對話歷史，呼叫主 LLM 產生回覆
 
-const SYSTEM_PROMPT = `你是 WowStylist 的時尚穿搭助手，說繁體中文，語氣親切自然（回覆不超過 4 句）。
+// ── Prompt：語意分析（Step 1 專用，輕量，只抽資訊不回覆） ──────────────────
+const ANALYSIS_SYSTEM_PROMPT = `你是穿搭需求分析器，只負責從使用者的訊息中抽取穿搭相關資訊。
+
+輸出格式（一行繁體中文，只列出能確定的項目）：
+[意圖] 場合=X｜風格=X｜預算=X｜性別=X｜隱含=X
+
+意圖選項：找整套穿搭／找單品／有某件找剩餘搭配／詢問使用方式／閒聊
+- 若是閒聊或問候，只輸出「[閒聊]」
+- 若是詢問使用方式，只輸出「[使用說明]」
+- 隱含條件從場合推斷（例：婚禮→不能搶新娘風采、上班→不能太暴露）
+- 無法確定的項目直接省略，不要填「未知」`;
+
+// ── Prompt：主對話（Step 3，穿搭顧問角色） ──────────────────────────────────
+const STYLIST_SYSTEM_PROMPT = `你是 WowStylist 的時尚穿搭助手，說繁體中文，語氣親切自然（回覆不超過 4 句）。
 
 ## 你的職責
-1. **收藏 IG 穿搭**：使用者傳 Instagram 連結過來，你會自動收藏並分析風格。
-2. **穿搭建議**：根據使用者描述的場合、風格、預算，給出具體的穿搭建議。
-3. **風格分析**：當使用者傳來非 IG 的時尚連結或描述穿搭，幫他分析風格標籤（風格/色系/形容詞）。
+1. **穿搭建議**：根據使用者描述的場合、風格、預算，給出具體建議。
+   訊息後方的「[需求分析：...]」是系統幫你整理好的結構化資訊，請善用它來給更精準的建議。
+2. **風格分析**：使用者傳來非 IG 連結時，引導他說出喜歡的風格或元素。
+3. **收藏說明**：使用者問怎麼收藏時，告訴他傳 IG 連結就會自動收藏。
 
 ## 回覆原則
-- 穿搭建議要具體（上衣、下半身、外套、鞋子都說清楚）
-- 可以問一個最關鍵的追問（場合？預算？性別？），但不要一次問多個問題
+- 穿搭建議要具體：至少說清楚上衣和下半身，有餘裕再加外套和鞋
+- 最多問一個最關鍵的追問（場合？預算？性別？），不要連問
 - 不確定的事老實說，不要編造
-- 如果使用者給的是非 IG 的時尚連結，告訴他「我注意到你貼了一個連結，但我目前只能收藏 Instagram 的連結。你可以告訴我那個連結是什麼風格或你喜歡哪個部分嗎？」
+- 收到非 IG 連結時：告訴使用者目前只能收藏 IG 連結，請他描述喜歡那個連結的哪個部分`;
 
-## 使用方式說明
-- 收藏 IG 貼文：把 Instagram 連結直接傳過來
-- 穿搭建議：用自然語言描述，例如「幫我找一套適合秋天約會的穿搭，預算 2000 以內」
-- 查看收藏：打「收藏夾」或到網頁看`;
-
-// 每個使用者的短期對話記憶（存在記憶體，重啟就清空；MVP 夠用，之後可搬進 DB）
+// ── 對話記憶 ─────────────────────────────────────────────────────────────────
 type ChatTurn = { role: "user" | "assistant"; content: string };
 const histories = new Map<string, ChatTurn[]>();
 const MAX_TURNS = 10;
@@ -36,14 +49,14 @@ function remember(userId: string, turn: ChatTurn) {
   histories.set(userId, h);
 }
 
-// ---------- 各家 provider ----------
-
-async function chatWithAnthropic(history: ChatTurn[]): Promise<string | null> {
+// ── LLM 呼叫：Anthropic ──────────────────────────────────────────────────────
+async function callAnthropic(
+  systemPrompt: string,
+  messages: ChatTurn[],
+  maxTokens = 500
+): Promise<string | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.error("[chat] CHAT_PROVIDER=anthropic 但沒設 ANTHROPIC_API_KEY");
-    return null;
-  }
+  if (!apiKey) return null;
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -54,29 +67,31 @@ async function chatWithAnthropic(history: ChatTurn[]): Promise<string | null> {
       },
       body: JSON.stringify({
         model: process.env.CHAT_MODEL || "claude-haiku-4-5",
-        max_tokens: 500,
-        system: SYSTEM_PROMPT,
-        messages: history,
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages,
       }),
     });
     if (!res.ok) {
-      console.error(`[chat] Anthropic API 失敗 HTTP ${res.status}:`, await res.text());
+      console.error(`[chat] Anthropic HTTP ${res.status}:`, await res.text());
       return null;
     }
     const data = (await res.json()) as { content?: { type: string; text?: string }[] };
     return data.content?.find((c) => c.type === "text")?.text ?? null;
   } catch (e) {
-    console.error("[chat] Anthropic API 錯誤:", e);
+    console.error("[chat] Anthropic 錯誤:", e);
     return null;
   }
 }
 
-async function chatWithOpenAI(history: ChatTurn[]): Promise<string | null> {
+// ── LLM 呼叫：OpenAI ─────────────────────────────────────────────────────────
+async function callOpenAI(
+  systemPrompt: string,
+  messages: ChatTurn[],
+  maxTokens = 500
+): Promise<string | null> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.error("[chat] CHAT_PROVIDER=openai 但沒設 OPENAI_API_KEY");
-    return null;
-  }
+  if (!apiKey) return null;
   try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -86,12 +101,12 @@ async function chatWithOpenAI(history: ChatTurn[]): Promise<string | null> {
       },
       body: JSON.stringify({
         model: process.env.CHAT_MODEL || "gpt-4o-mini",
-        max_tokens: 500,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
+        max_tokens: maxTokens,
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
       }),
     });
     if (!res.ok) {
-      console.error(`[chat] OpenAI API 失敗 HTTP ${res.status}:`, await res.text());
+      console.error(`[chat] OpenAI HTTP ${res.status}:`, await res.text());
       return null;
     }
     const data = (await res.json()) as {
@@ -99,12 +114,60 @@ async function chatWithOpenAI(history: ChatTurn[]): Promise<string | null> {
     };
     return data.choices?.[0]?.message?.content ?? null;
   } catch (e) {
-    console.error("[chat] OpenAI API 錯誤:", e);
+    console.error("[chat] OpenAI 錯誤:", e);
     return null;
   }
 }
 
-// 關鍵字規則：不用金鑰的保底方案（也是 LLM 掛掉時的 fallback 素材）
+// 統一入口：根據 provider 決定呼叫哪家
+async function callLLM(
+  provider: string,
+  systemPrompt: string,
+  messages: ChatTurn[],
+  maxTokens = 500
+): Promise<string | null> {
+  if (provider === "anthropic") return callAnthropic(systemPrompt, messages, maxTokens);
+  if (provider === "openai") return callOpenAI(systemPrompt, messages, maxTokens);
+  return null;
+}
+
+// ── Step 1：語意分析 ──────────────────────────────────────────────────────────
+// 用輕量 LLM 呼叫（max_tokens: 120）分析使用者訊息，
+// 回傳一行結構化摘要，例如：
+//   「[找整套穿搭] 場合=婚禮｜風格=正式｜隱含=不能搶新娘風采」
+//   「[閒聊]」
+async function analyzeIntent(
+  provider: string,
+  text: string
+): Promise<string | null> {
+  const result = await callLLM(
+    provider,
+    ANALYSIS_SYSTEM_PROMPT,
+    [{ role: "user", content: text }],
+    120 // 分析只需要短輸出
+  );
+  if (result) {
+    console.log(`[chat] 語意分析結果: ${result}`);
+  }
+  return result;
+}
+
+// ── Step 2：把分析結果附到使用者訊息後方 ────────────────────────────────────
+function enrichUserMessage(originalText: string, analysis: string | null, nonIgUrls?: string[]): string {
+  const parts: string[] = [originalText];
+
+  if (analysis && analysis !== "[閒聊]" && analysis !== "[使用說明]") {
+    parts.push(`\n[需求分析：${analysis.replace(/^\[.*?\]\s*/, "")}]`);
+  }
+
+  if (nonIgUrls && nonIgUrls.length > 0) {
+    parts.push(`\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`);
+  }
+
+  return parts.join("");
+}
+
+// ── Fallback：關鍵字規則（無金鑰或 LLM 全掛時用） ───────────────────────────
 function chatWithRules(text: string): string {
   const t = text.trim().toLowerCase();
 
@@ -121,12 +184,10 @@ function chatWithRules(text: string): string {
   if (/穿搭|穿什麼|怎麼穿|搭配/.test(t)) {
     return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
   }
-
   return "我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
 }
 
-// ---------- 對外的主函式 ----------
-
+// ── 對外主函式 ────────────────────────────────────────────────────────────────
 export async function generateChatReply(
   userId: string | null,
   text: string,
@@ -135,28 +196,27 @@ export async function generateChatReply(
   const provider = (process.env.CHAT_PROVIDER || "rules").toLowerCase();
   const uid = userId ?? "anonymous";
 
-  // 若有非 IG URL，在 user 訊息前面加上提示，讓 LLM 理解上下文
-  const enrichedText =
-    nonIgUrls && nonIgUrls.length > 0
-      ? `[使用者傳來了非 IG 的連結：${nonIgUrls.join(", ")}]\n${text}`
-      : text;
-
+  // rules 模式：直接走關鍵字，不呼叫任何 LLM
   if (provider === "rules") {
     return chatWithRules(text);
   }
 
+  // ── Step 1：語意分析 ─────────────────────────────────────────────────────
+  const analysis = await analyzeIntent(provider, text);
+
+  // ── Step 2：組裝 enriched 訊息 ──────────────────────────────────────────
+  const enrichedText = enrichUserMessage(text, analysis, nonIgUrls);
+  console.log(`[chat] Enriched message: ${enrichedText.slice(0, 200)}`);
+
+  // ── Step 3：存進記憶，呼叫主 LLM ────────────────────────────────────────
   remember(uid, { role: "user", content: enrichedText });
   const history = histories.get(uid) ?? [{ role: "user" as const, content: enrichedText }];
 
-  const answer =
-    provider === "anthropic"
-      ? await chatWithAnthropic(history)
-      : provider === "openai"
-        ? await chatWithOpenAI(history)
-        : null;
+  const answer = await callLLM(provider, STYLIST_SYSTEM_PROMPT, history, 500);
 
   if (!answer) {
-    // LLM 掛了或沒設金鑰 → 降級成規則回覆，至少不已讀不回
+    // LLM 失敗 → 規則 fallback，至少不已讀不回
+    console.warn("[chat] LLM 無回應，降級到 rules");
     return chatWithRules(text);
   }
 
