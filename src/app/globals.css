@@ -973,6 +973,12 @@ button {
   letter-spacing: 0.02em;
 }
 
+.tag__text:disabled {
+  cursor: default;
+  color: inherit;
+  opacity: 1;
+}
+
 .tag__x {
   width: 18px;
   height: 18px;

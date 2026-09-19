@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "style 風向標 — WowStylist" };
 
 export default async function CompassPage() {
-  const tags = await listTags();
+  const { tags, isMock } = await listTags();
 
   return (
     <main className="board board--fixed">
@@ -46,12 +46,16 @@ export default async function CompassPage() {
 
         <section className="compass__sheet">
           <span className="clip" aria-hidden="true" />
-          <TagCloud initialTags={tags} />
+          <TagCloud initialTags={tags} readOnly={isMock} />
         </section>
 
         <footer className="compass__foot">
           <span>字級大小＝這個標籤在你收藏裡的比重</span>
-          <span>示範資料 · 尚未接上資料庫</span>
+          {isMock ? (
+            <span className="mock-flag">示範資料 · 資料庫連不上，改不動</span>
+          ) : (
+            <span>{tags.length} 個標籤</span>
+          )}
         </footer>
       </div>
     </main>

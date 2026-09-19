@@ -1,12 +1,17 @@
 import crypto from "node:crypto";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
 import { saveLinkBasic, enrichLink } from "@/lib/ingest";
 import { generateChatReply } from "@/lib/chat";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
-// 流程：驗證簽章 → 解析事件 → 抓出 IG 連結存 DB → 回覆使用者。
+// 流程：驗證簽章 → 解析事件 → 抓出 IG 連結存 DB → 回覆使用者
+//       → 回應送出「之後」才去抓 IG 的 caption/username（after()）。
+//
+// 為什麼用 after()：抓 IG 一個連結要兩次 HTTP 往返，放在回應之前會把
+// function 的執行時間拉長，LINE 等不到 200 會重送，serverless 上也容易吃到
+// 逾時上限。after() 讓我們先把 200 丟回去，剩下的在背景跑完。
 
 export const dynamic = "force-dynamic";
 
@@ -131,15 +136,19 @@ export async function POST(req: Request) {
       );
     }
 
-    // 回覆完才抓 IG 內容，使用者不用等
-    for (const row of savedRows) {
-      if (row.fetchStatus !== "ok") {
-        try {
-          await enrichLink(row);
-        } catch (e) {
-          console.error(`[webhook] 抓取 ${row.shortcode} 內容時出錯:`, e);
+    // 回應送出之後才抓 IG 內容，使用者和 LINE 都不用等
+    const pending = savedRows.filter((row) => row.fetchStatus !== "ok");
+    if (pending.length > 0) {
+      after(async () => {
+        for (const row of pending) {
+          try {
+            await enrichLink(row);
+          } catch (e) {
+            console.error(`[webhook] 抓取 ${row.shortcode} 內容時出錯:`, e);
+          }
         }
-      }
+        console.log(`[webhook] 背景補抓完成 ${pending.length} 筆`);
+      });
     }
   }
 

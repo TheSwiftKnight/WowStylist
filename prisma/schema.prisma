@@ -37,3 +37,18 @@ model SharedLink {
   fetchStatus String? // null=還沒抓 | "ok" | "failed"
   fetchedAt   DateTime?
 }
+
+// style 風向標的標籤（風格 / 色系 / 形容詞）
+model StyleTag {
+  id      String @id @default(cuid())
+  label   String
+  kind    String // "style" | "color" | "mood"
+  weight  Float  @default(0.5) // 0~1，決定在風向標上的字級
+
+  ownerId String? // LINE userId，之後要分使用者時用
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([weight])
+}

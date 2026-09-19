@@ -17,7 +17,13 @@ function sizeFor(weight: number) {
   return `${(15 + clamped * 19).toFixed(1)}px`;
 }
 
-export default function TagCloud({ initialTags }: { initialTags: StyleTag[] }) {
+export default function TagCloud({
+  initialTags,
+  readOnly = false,
+}: {
+  initialTags: StyleTag[];
+  readOnly?: boolean;
+}) {
   const [tags, setTags] = useState<StyleTag[]>(initialTags);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftOpen, setDraftOpen] = useState(false);
@@ -108,7 +114,7 @@ export default function TagCloud({ initialTags }: { initialTags: StyleTag[] }) {
             className={`tag tag--${tag.kind}`}
             style={{ fontSize: sizeFor(tag.weight) }}
           >
-            {editingId === tag.id ? (
+            {editingId === tag.id && !readOnly ? (
               <input
                 className="tag__input"
                 defaultValue={tag.label}
@@ -124,24 +130,31 @@ export default function TagCloud({ initialTags }: { initialTags: StyleTag[] }) {
             ) : (
               <button
                 className="tag__text"
-                onClick={() => setEditingId(tag.id)}
-                onDoubleClick={() => cycleKind(tag)}
-                title="點一下改名字，點兩下換分類"
+                onClick={() => !readOnly && setEditingId(tag.id)}
+                onDoubleClick={() => !readOnly && cycleKind(tag)}
+                disabled={readOnly}
+                title={
+                  readOnly
+                    ? "資料庫還沒接上，這批是示範標籤"
+                    : "點一下改名字，點兩下換分類"
+                }
               >
                 {tag.label}
               </button>
             )}
-            <button
-              className="tag__x"
-              onClick={() => removeTag(tag)}
-              aria-label={`刪除標籤 ${tag.label}`}
-            >
-              ×
-            </button>
+            {!readOnly && (
+              <button
+                className="tag__x"
+                onClick={() => removeTag(tag)}
+                aria-label={`刪除標籤 ${tag.label}`}
+              >
+                ×
+              </button>
+            )}
           </span>
         ))}
 
-        {draftOpen ? (
+        {readOnly ? null : draftOpen ? (
           <span className="tag-draft">
             <label className="visually-hidden" htmlFor="new-tag-kind">
               分類

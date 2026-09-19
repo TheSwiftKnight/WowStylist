@@ -22,7 +22,7 @@ function decorPhotos(): string[] {
 }
 
 export default async function WallPage() {
-  const [{ links }, tags] = await Promise.all([getLinks(), listTags()]);
+  const [{ links }, { tags }] = await Promise.all([getLinks(), listTags()]);
   const year = new Date().getFullYear();
 
   return (
