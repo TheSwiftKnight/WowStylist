@@ -271,7 +271,8 @@ export async function generateChatReply(
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
-  const debug = process.env.CHAT_DEBUG === "true";
+  // const debug = process.env.CHAT_DEBUG === "true";
+  const debug = (1 === 1);
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
