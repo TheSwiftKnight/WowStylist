@@ -6,10 +6,91 @@
 // 也不用再維護一份會跟 Python 端對不起來的 schema.prisma。
 
 import { Pool } from "pg";
+import { isIP } from "node:net";
 
-const globalForPg = globalThis as unknown as { pgPool?: Pool };
+const globalForPg = globalThis as unknown as {
+  pgPool?: Pool;
+  pgFallbackPromise?: Promise<Pool | null>;
+};
 
-function createPool(): Pool {
+const PUBLIC_DNS_URL = "https://dns.google/resolve";
+
+function isRdsHostname(host: string): boolean {
+  return (
+    host.includes(".rds.") &&
+    (host.endsWith(".amazonaws.com") || host.endsWith(".amazonaws.com.cn"))
+  );
+}
+
+function isPublicIpv4(value: string): boolean {
+  if (isIP(value) !== 4) return false;
+
+  const [a, b] = value.split(".").map(Number);
+
+  return !(
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    a >= 224
+  );
+}
+
+async function resolvePublicHost(host: string): Promise<string | null> {
+  if (!isRdsHostname(host)) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4_000);
+
+  try {
+    const url = new URL(PUBLIC_DNS_URL);
+    url.searchParams.set("name", host);
+    url.searchParams.set("type", "A");
+
+    const response = await fetch(url, {
+      headers: { accept: "application/dns-json" },
+      signal: controller.signal,
+      cache: "no-store",
+    });
+
+    if (!response.ok) return null;
+
+    const payload = (await response.json()) as {
+      Answer?: Array<{ data?: string }>;
+    };
+
+    for (const answer of payload.Answer ?? []) {
+      const value = (answer.data ?? "").replace(/\.$/, "");
+      if (isPublicIpv4(value)) return value;
+    }
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isNetworkError(error: unknown): boolean {
+  const candidate = error as { code?: string; message?: string };
+  const code = candidate?.code ?? "";
+  const message = (candidate?.message ?? String(error)).toLowerCase();
+
+  return (
+    ["ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(
+      code
+    ) ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("no route to host") ||
+    message.includes("network is unreachable")
+  );
+}
+
+function createPool(connectHost?: string): Pool {
   const { DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE } =
     process.env;
 
@@ -20,7 +101,7 @@ function createPool(): Pool {
   }
 
   return new Pool({
-    host: DB_HOST,
+    host: connectHost ?? DB_HOST,
     port: Number(DB_PORT ?? 5432),
     database: DB_NAME,
     user: DB_USER,
@@ -30,7 +111,11 @@ function createPool(): Pool {
     ssl:
       (DB_SSLMODE ?? "require") === "disable"
         ? undefined
-        : { rejectUnauthorized: false },
+        : {
+            rejectUnauthorized: false,
+            // 公開 DNS fallback 會直接連 IP；仍保留原 hostname 給 TLS SNI。
+            servername: DB_HOST,
+          },
     max: 5,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
@@ -46,6 +131,46 @@ export function getPool(): Pool {
     globalForPg.pgPool = createPool();
   }
   return globalForPg.pgPool;
+}
+
+async function getPublicFallbackPool(error: unknown): Promise<Pool | null> {
+  const host = process.env.DB_HOST;
+
+  if (!host || !isNetworkError(error) || !isRdsHostname(host)) {
+    return null;
+  }
+
+  if (!globalForPg.pgFallbackPromise) {
+    globalForPg.pgFallbackPromise = (async () => {
+      const publicIp = await resolvePublicHost(host);
+
+      if (!publicIp) return null;
+
+      console.warn(
+        `[DB] ${host} 的一般 DNS 連線失敗；改用公共 DNS 位址 ${publicIp} 重試。`
+      );
+
+      const oldPool = globalForPg.pgPool;
+      const fallbackPool = createPool(publicIp);
+      globalForPg.pgPool = fallbackPool;
+
+      if (oldPool) void oldPool.end().catch(() => undefined);
+
+      return fallbackPool;
+    })();
+  }
+
+  const pending = globalForPg.pgFallbackPromise;
+
+  try {
+    return await pending;
+  } finally {
+    // 只在同一次 fallback 中共用 Promise。RDS failover 後公開 IP 可能會改，
+    // 下一次網路錯誤必須重新查 DNS，不能永久記住舊 IP。
+    if (globalForPg.pgFallbackPromise === pending) {
+      globalForPg.pgFallbackPromise = undefined;
+    }
+  }
 }
 
 /** 統一的單品表。schema 見 pipeline/migrations/001_fashion_items.sql。 */
@@ -65,6 +190,15 @@ export async function query<T extends Record<string, unknown>>(
   text: string,
   params: unknown[] = []
 ): Promise<T[]> {
-  const result = await getPool().query(text, params);
-  return result.rows as T[];
+  try {
+    const result = await getPool().query(text, params);
+    return result.rows as T[];
+  } catch (error) {
+    const fallbackPool = await getPublicFallbackPool(error);
+
+    if (!fallbackPool) throw error;
+
+    const result = await fallbackPool.query(text, params);
+    return result.rows as T[];
+  }
 }

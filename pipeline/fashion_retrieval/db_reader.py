@@ -1,7 +1,10 @@
+import ipaddress
 import os
+import sys
 from typing import Any
 
 import psycopg2
+import requests
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
@@ -12,6 +15,87 @@ load_dotenv()
 # ============================================================
 # Database connection
 # ============================================================
+
+PUBLIC_DNS_URL = "https://dns.google/resolve"
+
+
+def _is_rds_hostname(host: str) -> bool:
+    return (
+        ".rds." in host
+        and (
+            host.endswith(".amazonaws.com")
+            or host.endswith(".amazonaws.com.cn")
+        )
+    )
+
+
+def _is_public_ipv4(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+
+    return address.version == 4 and address.is_global
+
+
+def resolve_public_host(host: str) -> str | None:
+    """
+    Resolve an RDS hostname through public DNS.
+
+    Some local/VPN DNS setups intermittently return the RDS VPC address even
+    though the instance also has a public endpoint. This resolver is only used
+    after the normal database connection fails; VPC deployments therefore keep
+    using their private route.
+    """
+
+    if not _is_rds_hostname(host):
+        return None
+
+    try:
+        response = requests.get(
+            PUBLIC_DNS_URL,
+            params={"name": host, "type": "A"},
+            headers={"accept": "application/dns-json"},
+            timeout=4,
+        )
+        response.raise_for_status()
+        answers = response.json().get("Answer", [])
+    except Exception:
+        return None
+
+    for answer in answers:
+        value = str(answer.get("data", "")).rstrip(".")
+        if _is_public_ipv4(value):
+            return value
+
+    return None
+
+
+def _is_network_error(error: psycopg2.OperationalError) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "timeout",
+            "timed out",
+            "no route to host",
+            "network is unreachable",
+            "could not translate host name",
+        )
+    )
+
+
+def _connection_options() -> dict[str, Any]:
+    return {
+        "host": os.getenv("DB_HOST"),
+        "port": os.getenv("DB_PORT"),
+        "dbname": os.getenv("DB_NAME"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "sslmode": os.getenv("DB_SSLMODE", "require"),
+        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+    }
+
 
 def get_connection():
     """
@@ -33,15 +117,33 @@ def get_connection():
             f"Missing database environment variables: {', '.join(missing)}"
         )
 
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        sslmode=os.getenv("DB_SSLMODE", "require"),
-        connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
-    )
+    options = _connection_options()
+
+    try:
+        return psycopg2.connect(**options)
+    except psycopg2.OperationalError as original_error:
+        host = str(options["host"])
+
+        if not _is_network_error(original_error):
+            raise
+
+        public_ip = resolve_public_host(host)
+
+        if not public_ip:
+            raise
+
+        print(
+            f"[DB] {host} 的一般 DNS 連線失敗；"
+            f"改用公共 DNS 位址 {public_ip} 重試。",
+            file=sys.stderr,
+        )
+
+        # host keeps the original hostname for TLS/SNI; hostaddr tells libpq
+        # which address to dial and prevents another private-DNS lookup.
+        return psycopg2.connect(
+            **options,
+            hostaddr=public_ip,
+        )
 
 
 # ============================================================

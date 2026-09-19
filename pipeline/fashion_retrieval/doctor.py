@@ -157,37 +157,43 @@ def check_network() -> bool:
         line(BAD, f"DNS 解不出來：{error}")
         return False
 
+    fallback_ip = None
+
     if is_private_ip(ip):
         line(
             WARN,
             f"DNS -> {ip}（VPC 內網位址）",
         )
-        print(
-            "\n      這台 RDS 的 Publicly accessible 是 No，"
-            "所以從 VPC 外面連不到。\n"
-            "      三個選項：\n"
-            "        a) AWS Console → RDS → 這個 instance → Modify →\n"
-            "           Connectivity → Public access 改成 Publicly accessible，\n"
-            "           再去 security group 的 Inbound rules 開 5432 給你的 IP\n"
-            "        b) 用 VPC 裡的 EC2 當跳板：\n"
-            "           ssh -N -L 5432:<rds-endpoint>:5432 ec2-user@<bastion>\n"
-            "           然後把 .env 的 DB_HOST 改成 127.0.0.1\n"
-            "        c) 請當初開這台 RDS 的隊友幫忙跑 migration，\n"
-            "           或把它的連線方式問清楚\n"
-        )
+
+        from fashion_retrieval.db_reader import resolve_public_host
+
+        fallback_ip = resolve_public_host(host)
+
+        if fallback_ip:
+            line(
+                WARN,
+                f"公共 DNS -> {fallback_ip}（連線失敗時會自動改走這個位址）",
+            )
     else:
         line(OK, f"DNS -> {ip}（公開位址）")
 
     # ---- TCP ----
     try:
-        sock = socket.create_connection((host, port), timeout=8)
+        tcp_host = fallback_ip or host
+        sock = socket.create_connection((tcp_host, port), timeout=8)
     except Exception as error:
         line(
             BAD,
             f"TCP 連不上 {port} 埠：{type(error).__name__} {error}",
         )
 
-        if not is_private_ip(ip):
+        if is_private_ip(ip) and not fallback_ip:
+            print(
+                "\n      系統與公共 DNS 都沒有可用的公開位址。"
+                "請確認 RDS 的 Publicly accessible 已開啟，\n"
+                "      或從 VPC／SSH 跳板連線。\n"
+            )
+        elif not is_private_ip(ip):
             print(
                 "\n      DNS 是公開位址但連不上，"
                 "通常是 security group 沒開你的 IP。\n"
