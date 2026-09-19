@@ -6,10 +6,23 @@
 //   - "rules"     : 純關鍵字規則（不用金鑰，預設值）
 // 之後要換模型只要改 .env，不用動程式。
 
-const SYSTEM_PROMPT = `你是 WowStylist 的 LINE 小助手，說繁體中文，語氣親切簡短（不超過 3 句）。
-這個服務讓使用者把喜歡的 Instagram 貼文/Reels 分享進來收藏，並在網頁上瀏覽。
-如果使用者問怎麼使用，告訴他們：直接把 IG 貼文或 Reels 的連結傳過來就會自動收藏。
-不確定的事就老實說不知道，不要編造。`;
+const SYSTEM_PROMPT = `你是 WowStylist 的時尚穿搭助手，說繁體中文，語氣親切自然（回覆不超過 4 句）。
+
+## 你的職責
+1. **收藏 IG 穿搭**：使用者傳 Instagram 連結過來，你會自動收藏並分析風格。
+2. **穿搭建議**：根據使用者描述的場合、風格、預算，給出具體的穿搭建議。
+3. **風格分析**：當使用者傳來非 IG 的時尚連結或描述穿搭，幫他分析風格標籤（風格/色系/形容詞）。
+
+## 回覆原則
+- 穿搭建議要具體（上衣、下半身、外套、鞋子都說清楚）
+- 可以問一個最關鍵的追問（場合？預算？性別？），但不要一次問多個問題
+- 不確定的事老實說，不要編造
+- 如果使用者給的是非 IG 的時尚連結，告訴他「我注意到你貼了一個連結，但我目前只能收藏 Instagram 的連結。你可以告訴我那個連結是什麼風格或你喜歡哪個部分嗎？」
+
+## 使用方式說明
+- 收藏 IG 貼文：把 Instagram 連結直接傳過來
+- 穿搭建議：用自然語言描述，例如「幫我找一套適合秋天約會的穿搭，預算 2000 以內」
+- 查看收藏：打「收藏夾」或到網頁看`;
 
 // 每個使用者的短期對話記憶（存在記憶體，重啟就清空；MVP 夠用，之後可搬進 DB）
 type ChatTurn = { role: "user" | "assistant"; content: string };
@@ -93,31 +106,47 @@ async function chatWithOpenAI(history: ChatTurn[]): Promise<string | null> {
 
 // 關鍵字規則：不用金鑰的保底方案（也是 LLM 掛掉時的 fallback 素材）
 function chatWithRules(text: string): string {
-  const t = text.trim();
-  if (/怎麼用|怎么用|幫助|help|說明/i.test(t)) {
-    return "使用方式很簡單：在 Instagram 看到喜歡的貼文或 Reels，按「分享 → 複製連結」，把連結貼到這裡傳給我，我就會幫你收藏！收藏的內容可以在我們的網頁上瀏覽 ✨";
+  const t = text.trim().toLowerCase();
+
+  if (/怎麼用|怎么用|幫助|help|說明/.test(t)) {
+    return "使用方式：\n1️⃣ 收藏穿搭 → 把 Instagram 貼文/Reels 連結傳過來\n2️⃣ 穿搭建議 → 用文字描述場合、風格、預算，例如「秋天約會穿搭，預算 2000」\n3️⃣ 查看收藏 → 打「收藏夾」或到網頁瀏覽 ✨";
   }
-  if (/你好|嗨|哈囉|hi|hello/i.test(t)) {
-    return "嗨嗨！把你喜歡的 IG 貼文連結傳給我，我會幫你收藏起來 ✨ 打「怎麼用」可以看使用說明。";
+  if (/收藏夾|我的收藏|看收藏/.test(t)) {
+    const url = process.env.SITE_URL ? `${process.env.SITE_URL}/favorites` : "網頁收藏夾";
+    return `你的 IG 穿搭收藏在這裡 👉 ${url}`;
   }
-  return "我是收藏小幫手！傳 IG 貼文/Reels 連結給我就會自動收藏。打「怎麼用」看說明 ✨";
+  if (/你好|嗨|哈囉|hi|hello/.test(t)) {
+    return "嗨嗨！我是你的穿搭助手 ✨\n• 傳 IG 連結給我 → 自動收藏\n• 說出場合和預算 → 我給穿搭建議\n打「怎麼用」看更多說明！";
+  }
+  if (/穿搭|穿什麼|怎麼穿|搭配/.test(t)) {
+    return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
+  }
+
+  return "我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
 }
 
 // ---------- 對外的主函式 ----------
 
 export async function generateChatReply(
   userId: string | null,
-  text: string
+  text: string,
+  nonIgUrls?: string[]
 ): Promise<string> {
   const provider = (process.env.CHAT_PROVIDER || "rules").toLowerCase();
   const uid = userId ?? "anonymous";
+
+  // 若有非 IG URL，在 user 訊息前面加上提示，讓 LLM 理解上下文
+  const enrichedText =
+    nonIgUrls && nonIgUrls.length > 0
+      ? `[使用者傳來了非 IG 的連結：${nonIgUrls.join(", ")}]\n${text}`
+      : text;
 
   if (provider === "rules") {
     return chatWithRules(text);
   }
 
-  remember(uid, { role: "user", content: text });
-  const history = histories.get(uid) ?? [{ role: "user" as const, content: text }];
+  remember(uid, { role: "user", content: enrichedText });
+  const history = histories.get(uid) ?? [{ role: "user" as const, content: enrichedText }];
 
   const answer =
     provider === "anthropic"

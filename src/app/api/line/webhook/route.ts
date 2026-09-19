@@ -1,13 +1,17 @@
 import crypto from "node:crypto";
 import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
+import { extractAnyUrls } from "@/lib/url";
 import { saveLinkBasic, enrichLink } from "@/lib/ingest";
 import { generateChatReply } from "@/lib/chat";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
-// 流程：驗證簽章 → 解析事件 → 抓出 IG 連結存 DB → 回覆使用者
-//       → 回應送出「之後」才去抓 IG 的 caption/username（after()）。
+//
+// 路由邏輯（三路）：
+//   1. 含 IG 連結  → 存 DB，回覆「已收藏」，背景補抓 IG 內容（after()）
+//   2. 含其他 URL  → 交給 LLM，附上「偵測到非 IG 連結」的上下文
+//   3. 純文字      → 交給 LLM 做穿搭對話
 //
 // 為什麼用 after()：抓 IG 一個連結要兩次 HTTP 往返，放在回應之前會把
 // function 的執行時間拉長，LINE 等不到 200 會重送，serverless 上也容易吃到
@@ -70,7 +74,6 @@ async function replyText(replyToken: string, text: string): Promise<void> {
       }),
     });
     if (!res.ok) {
-      // token 錯誤/過期、replyToken 用過或逾時，都會在這裡看到原因
       console.error(
         `[webhook] LINE 回覆失敗 HTTP ${res.status}:`,
         await res.text()
@@ -107,48 +110,63 @@ export async function POST(req: Request) {
 
     const text = event.message.text ?? "";
     console.log(`[webhook] 文字訊息: ${text.slice(0, 120)}`);
-    const links = extractIgLinks(text);
-    console.log(`[webhook] 解析出 ${links.length} 個 IG 連結`);
 
-    if (links.length === 0) {
-      // 不是 IG 連結 → 走對話引擎（src/lib/chat.ts，由 CHAT_PROVIDER 決定用哪家 LLM）
+    // ── 路由判斷 ─────────────────────────────────────────────────
+    const igLinks = extractIgLinks(text);
+    const allUrls = extractAnyUrls(text);
+    // 非 IG 的 URL（排除已被 IG 正規化處理的）
+    const nonIgUrls = allUrls.filter((u) => !u.includes("instagram.com"));
+
+    console.log(
+      `[webhook] IG 連結 ${igLinks.length} 個、非 IG URL ${nonIgUrls.length} 個`
+    );
+
+    // ── 路徑 1：有 IG 連結 → 收藏流程 ───────────────────────────
+    if (igLinks.length > 0) {
+      const senderId = event.source?.userId ?? null;
+      const senderName = senderId ? await getSenderName(senderId) : null;
+
+      const savedRows = [];
+      for (const link of igLinks) {
+        savedRows.push(
+          await saveLinkBasic(link, { sourceText: text, senderId, senderName })
+        );
+      }
+      console.log(`[webhook] 已存入 ${savedRows.length} 筆`);
+
       if (event.replyToken) {
-        const answer = await generateChatReply(event.source?.userId ?? null, text);
-        await replyText(event.replyToken, answer);
+        await replyText(
+          event.replyToken,
+          `收到！已收藏 ${savedRows.length} 個 IG 連結 ✅`
+        );
+      }
+
+      // 回應送出之後才抓 IG 內容
+      const pending = savedRows.filter((row) => row.fetchStatus !== "ok");
+      if (pending.length > 0) {
+        after(async () => {
+          for (const row of pending) {
+            try {
+              await enrichLink(row);
+            } catch (e) {
+              console.error(`[webhook] 抓取 ${row.shortcode} 內容時出錯:`, e);
+            }
+          }
+          console.log(`[webhook] 背景補抓完成 ${pending.length} 筆`);
+        });
       }
       continue;
     }
 
-    const senderId = event.source?.userId ?? null;
-    const senderName = senderId ? await getSenderName(senderId) : null;
-
-    // 先快速存檔 + 回覆，IG 內容（圖片/文字）之後再慢慢抓
-    const savedRows = [];
-    for (const link of links) {
-      savedRows.push(await saveLinkBasic(link, { sourceText: text, senderId, senderName }));
-    }
-    console.log(`[webhook] 已存入 ${savedRows.length} 筆`);
-
+    // ── 路徑 2 & 3：非 IG URL 或純文字 → LLM 對話 ──────────────
+    // nonIgUrls 若有值，chat.ts 會把連結帶進 prompt 讓 LLM 知道上下文
     if (event.replyToken) {
-      await replyText(
-        event.replyToken,
-        `收到！已收藏 ${savedRows.length} 個連結 ✅`
+      const answer = await generateChatReply(
+        event.source?.userId ?? null,
+        text,
+        nonIgUrls.length > 0 ? nonIgUrls : undefined
       );
-    }
-
-    // 回應送出之後才抓 IG 內容，使用者和 LINE 都不用等
-    const pending = savedRows.filter((row) => row.fetchStatus !== "ok");
-    if (pending.length > 0) {
-      after(async () => {
-        for (const row of pending) {
-          try {
-            await enrichLink(row);
-          } catch (e) {
-            console.error(`[webhook] 抓取 ${row.shortcode} 內容時出錯:`, e);
-          }
-        }
-        console.log(`[webhook] 背景補抓完成 ${pending.length} 筆`);
-      });
+      await replyText(event.replyToken, answer);
     }
   }
 
