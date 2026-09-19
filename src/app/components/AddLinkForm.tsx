@@ -38,13 +38,15 @@ export default function AddLinkForm() {
     <>
       <form className="add-form" onSubmit={onSubmit}>
         <input
+          className="field"
           type="url"
+          aria-label="Instagram 連結"
           placeholder="貼上 Instagram 貼文 / Reels 連結來測試…"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           disabled={busy}
         />
-        <button type="submit" disabled={busy || !url.trim()}>
+        <button className="btn" type="submit" disabled={busy || !url.trim()}>
           {busy ? "新增中…" : "新增"}
         </button>
       </form>

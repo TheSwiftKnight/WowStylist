@@ -20,7 +20,7 @@ export default function BackfillButton({ pendingCount }: { pendingCount: number 
   }
 
   return (
-    <button className="backfill-btn" onClick={onClick} disabled={busy}>
+    <button className="btn btn--ghost" onClick={onClick} disabled={busy}>
       {busy ? "抓取中…" : `補抓 ${pendingCount} 則內容`}
     </button>
   );

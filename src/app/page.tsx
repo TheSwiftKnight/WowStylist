@@ -1,54 +1,95 @@
-import { prisma } from "@/lib/db";
-import AddLinkForm from "./components/AddLinkForm";
-import LinkCard from "./components/LinkCard";
-import BackfillButton from "./components/BackfillButton";
+import fs from "node:fs";
+import path from "node:path";
+import Link from "next/link";
+import Scatter from "./components/Scatter";
+import { CompassMotif, MagnoliaMotif, WreathMotif } from "./components/Motifs";
+import { getLinks } from "@/lib/links";
+import { listTags } from "@/lib/tags";
 
 export const dynamic = "force-dynamic";
 
-export default async function HomePage() {
-  const links = await prisma.sharedLink.findMany({
-    orderBy: { createdAt: "desc" },
-  });
+/** 拿 public/media 裡已經抓下來的圖，當首頁裝飾用的拍立得照片。 */
+function decorPhotos(): string[] {
+  try {
+    return fs
+      .readdirSync(path.join(process.cwd(), "public", "media"))
+      .filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
+      .slice(0, 6)
+      .map((f) => `/media/${f}`);
+  } catch {
+    return [];
+  }
+}
 
-  const pendingCount = links.filter((l) => l.fetchStatus !== "ok").length;
+export default async function WallPage() {
+  const [{ links }, tags] = await Promise.all([getLinks(), listTags()]);
+  const year = new Date().getFullYear();
 
   return (
-    <main className="container">
-      <div className="header">
-        <h1>靈感收藏</h1>
-        <span className="count">{links.length} 則</span>
-        {pendingCount > 0 && <BackfillButton pendingCount={pendingCount} />}
+    <main className="wall">
+      <Scatter photos={decorPhotos()} />
+
+      <div className="wall__inner">
+        <header className="masthead">
+          <p className="masthead__kicker">Wow Stylist</p>
+          <h1 className="masthead__title">
+            My<em> Inspiration</em>
+          </h1>
+          <div className="masthead__rule" />
+        </header>
+
+        <nav className="entries" aria-label="分頁">
+          <Link className="entry" href="/favorites">
+            <span className="pin" />
+            <div
+              className="entry__plate"
+              style={{ ["--plate" as string]: "#efe9db" }}
+            >
+              <MagnoliaMotif />
+            </div>
+            <div className="entry__caption">
+              <h2 className="entry__name">收藏夾</h2>
+              <p className="entry__sub">Saved</p>
+              <p className="entry__meta">
+                從 LINE 分享進來的貼文 · 共 {links.length} 則
+              </p>
+            </div>
+          </Link>
+
+          <Link className="entry" href="/compass">
+            <span className="pin pin--slate" />
+            <div
+              className="entry__plate"
+              style={{ ["--plate" as string]: "#e9eef0" }}
+            >
+              <CompassMotif />
+            </div>
+            <div className="entry__caption">
+              <h2 className="entry__name">style 風向標</h2>
+              <p className="entry__sub">Your Algorithm</p>
+              <p className="entry__meta">
+                現在的你偏向什麼 · {tags.length} 個標籤
+              </p>
+            </div>
+          </Link>
+
+          <Link className="entry" href="/yearly">
+            <span className="pin pin--rust" />
+            <div
+              className="entry__plate"
+              style={{ ["--plate" as string]: "#f0e7d5" }}
+            >
+              <WreathMotif />
+            </div>
+            <div className="entry__caption">
+              <h2 className="entry__name">年度總結</h2>
+              <p className="entry__sub">Almanac</p>
+              <p className="entry__meta">{year} 這一年的穿搭軌跡</p>
+              <span className="entry__soon">籌備中</span>
+            </div>
+          </Link>
+        </nav>
       </div>
-      <p className="subtitle">
-        把喜歡的 Instagram 貼文或 Reels 分享給 LINE 官方帳號，就會出現在這裡。
-      </p>
-
-      <AddLinkForm />
-
-      {links.length === 0 ? (
-        <div className="empty">
-          還沒有收藏。
-          <br />
-          用上面的欄位貼一個 IG 連結試試，或把貼文分享給你的 LINE bot。
-        </div>
-      ) : (
-        <div className="grid">
-          {links.map((link) => (
-            <LinkCard
-              key={link.id}
-              id={link.id}
-              url={link.url}
-              kind={link.kind}
-              username={link.username}
-              caption={link.caption}
-              mediaPath={link.mediaPath}
-              isVideo={link.isVideo}
-              senderName={link.senderName}
-              createdAt={link.createdAt.toISOString()}
-            />
-          ))}
-        </div>
-      )}
     </main>
   );
 }
