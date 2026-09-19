@@ -334,7 +334,7 @@ export async function generateChatReply(
   console.log(`[chat] 送出分析，provider=${provider} model=${model}`);
   console.log(`[chat] userMessage: ${userMessage.slice(0, 200)}`);
 
-  const { content: result, reason } = await callLLM(provider, CLASSIFIER_SYSTEM_PROMPT, userMessage, 400);
+  const { content: result, reason } = await callLLM(provider, CLASSIFIER_SYSTEM_PROMPT, userMessage, 700);
 
   if (!result) {
     console.warn(`[chat] LLM 無回應（${reason}），降級到 rules`);
