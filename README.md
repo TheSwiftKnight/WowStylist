@@ -50,6 +50,17 @@ LINE bot 完整設定步驟 → 見 **SETUP.md**。
 
 收到連結後，後端會去抓 `instagram.com/p/<code>/embed/captioned/`（IG 公開的 embed 頁，不用登入、不用 API 金鑰），從 HTML 解析出**帳號、caption、圖片網址**（Reels 是影片縮圖），並把圖片下載到 `public/media/` 存起來（IG 的 CDN 圖片網址帶簽名、幾天後會過期，所以必須落地保存）。前端卡片顯示這些內容，點卡片直接跳原始 IG 貼文。相關程式在 `src/lib/igFetch.ts`。
 
+## 打字對話
+
+webhook 收到「不是 IG 連結」的文字時，會交給 `src/lib/chat.ts` 產生回覆。引擎由 `.env` 的 `CHAT_PROVIDER` 決定：`rules`（關鍵字規則，預設、免金鑰）、`anthropic`（Claude API）、`openai`。切換供應商或模型只要改 `.env`（`CHAT_MODEL` 可覆寫預設模型），不用動程式；LLM 呼叫失敗會自動降級成規則回覆。對話記憶目前存在記憶體（每人最近 10 句，重啟清空），之後要持久化再搬進 DB。
+
+## Rich Menu（聊天室下方的圖片選單）
+
+- 設定檔：`richmenu/config.json`（區塊座標 + 動作：`uri` 開網址 / `message` 幫使用者送出文字）
+- 選單圖：`richmenu/menu.png`（尺寸須和 config 的 size 一致、< 1MB；目前是佔位圖，設計好新圖直接替換）
+- 指令：`npm run richmenu create`（建立＋設為預設）、`npm run richmenu list`、`npm run richmenu delete <id>`、`npm run richmenu clear`
+- 改版流程：改 config / 換圖 → 再跑一次 `npm run richmenu create`（同名舊選單會自動刪除）
+
 ## 已知限制（MVP）
 
 - **私人帳號、被下架/限制的貼文**抓不到內容，卡片會顯示「尚未抓到圖片」，狀態記為 `failed`；頁面右上的「補抓」按鈕可重試（一次 10 筆）。

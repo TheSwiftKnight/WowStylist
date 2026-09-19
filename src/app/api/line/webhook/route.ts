@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
 import { saveLinkBasic, enrichLink } from "@/lib/ingest";
+import { generateChatReply } from "@/lib/chat";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
@@ -105,11 +106,10 @@ export async function POST(req: Request) {
     console.log(`[webhook] 解析出 ${links.length} 個 IG 連結`);
 
     if (links.length === 0) {
+      // 不是 IG 連結 → 走對話引擎（src/lib/chat.ts，由 CHAT_PROVIDER 決定用哪家 LLM）
       if (event.replyToken) {
-        await replyText(
-          event.replyToken,
-          "傳一個 Instagram 貼文或 Reels 的連結給我，我會幫你收藏起來 ✨"
-        );
+        const answer = await generateChatReply(event.source?.userId ?? null, text);
+        await replyText(event.replyToken, answer);
       }
       continue;
     }

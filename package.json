@@ -8,7 +8,8 @@
     "start": "next start",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
-    "db:seed": "node scripts/seed.mjs"
+    "db:seed": "node scripts/seed.mjs",
+    "richmenu": "node scripts/richmenu.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.16.0",
