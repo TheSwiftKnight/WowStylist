@@ -17,15 +17,32 @@
 // ── Prompt：意圖分類器 ────────────────────────────────────────────────────────
 const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根據使用者輸入，判斷意圖並輸出結構化結果。
 
+## 風格資料庫（用於語意匹配）
+以下是可用的穿搭風格，每個風格含有別名、場合、季節供語意比對：
+
+老錢風: aliases=[old money aesthetic, old money, 老錢, preppy, classic elegance], occasions=[日常通勤, 休閒聚會, 商務休閒, 度假, 週末出遊], seasons=[spring, fall, autumn, winter, summer]
+靜奢風: aliases=[stealth wealth, quiet luxury, 靜奢, 低調奢華, minimalist luxury], occasions=[日常穿著, 辦公室, 正式場合, 晚間活動, 特殊場合], seasons=[fall, winter, spring, summer]
+芭蕾風: aliases=[ballet core, balletcore, 芭蕾核心, 芭蕾女孩, ballet aesthetic, ballerina], occasions=[日常通勤, 休閒街頭, 舞蹈教室, 健身課程], seasons=[spring, fall, winter, summer]
+蝴蝶結甜美風: aliases=[coquette aesthetic, bow girl, coquette, 甜美, 蝴蝶結, feminine, girly], occasions=[紐約時裝週, 街拍, 春日約會, 通勤, 咖啡廳], seasons=[spring, winter, fall]
+田園風: aliases=[cottage core, cottagecore, 鄉村風, 田園, 自然風, nature, botanical], occasions=[健行, 野餐, 城市漫步, 音樂節], seasons=[spring, summer, fall, winter]
+明亮學院風: aliases=[light academia, light academia aesthetic, 學院風, 書卷氣, intellectual, academic], occasions=[咖啡廳, 校園, 圖書館, 半正式場合], seasons=[spring, fall, winter, summer]
+
 ## 意圖類型定義
 - A：找「一件特定單品」——使用者給出條件（顏色、材質、款式等），想找某類型的單品，不涉及搭配
 - B：「已有一件指定衣物」——使用者描述手邊某件衣物，想找其他可以和它搭配的衣物
 - C：針對「場合或情境」——使用者描述要去哪裡或做什麼，想找完整一套穿搭，沒有指定任何特定衣物
 - 其他：閒聊、問候、詢問使用方式
 
+## 風格匹配規則（B 和 C 情境適用）
+1. 將使用者輸入與風格資料庫中的 aliases 做語意比對（不限完全相符，語意相近即可）
+2. 若 aliases 匹配不足 5 個風格，再與 occasions 做語意比對補足
+3. 若仍不足，再與 seasons 比對補足
+4. 挑選最相符的最多 5 個 style_zh（中文風格名），輸出為 [風格:] 標籤
+5. 若完全無法匹配，省略 [風格:] 標籤
+
 ## 價格處理
 若輸入中有價格相關描述（預算、元、NT$、以內、便宜、高價位等），
-→ 抽取為獨立的 [價格] 標籤
+→ 抽取為獨立的 [price] 標籤
 → 並從主要描述中移除這段文字
 
 ## 輸出規則（嚴格遵守以下格式，不要輸出任何說明文字）
@@ -37,15 +54,17 @@ const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根�
 直接輸出使用者原始訊息，不添加任何標籤。
 
 ### B（有指定衣物，找搭配）
+[風格: {最多5個相符的中文風格名，逗號分隔；若無匹配則省略此行}]
 {使用者原始訊息（移除價格相關文字）}
-[已知單品: {已知衣物的詳細描述，包含顏色、款式、材質等特徵}]
-[搭配關鍵字: {5~10個名詞或形容詞，空格分隔，例如：深藍 修身 正式 西裝 商務 俐落}]
-[價格: {若有；否則省略此行}]
+[item: {已知衣物的詳細描述，英文，包含 color/style/material 等特徵，例如：navy slim-fit wool blazer}]
+[keywords: {5~10個英文名詞或形容詞，空格分隔，例如：navy slim formal blazer business clean}]
+[price: {若有，英文描述，例如：under NT$2000；否則省略此行}]
 
 ### C（找完整穿搭）
+[風格: {最多5個相符的中文風格名，逗號分隔；若無匹配則省略此行}]
 {使用者原始訊息（移除價格相關文字）}
-[限制條件: {所有限制條件，逗號分隔，例如：婚禮, 正式, 不搶新娘風采, 淡色系}]
-[價格: {若有；否則省略此行}]`;
+[keywords: {5~10個英文名詞或形容詞，空格分隔，涵蓋場合、風格、限制，例如：wedding guest formal light-color elegant feminine}]
+[price: {若有，英文描述，例如：under NT$3000；否則省略此行}]`;
 
 // LLM 回傳結果，content=null 時 reason 說明失敗原因（會直接出現在 DEBUG LINE 訊息裡）
 type LLMResult = { content: string; reason: string } | { content: null; reason: string };
@@ -300,7 +319,6 @@ export async function generateChatReply(
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
   const debug = process.env.CHAT_DEBUG === "true";
-  // const debug = (1 === 1);
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
