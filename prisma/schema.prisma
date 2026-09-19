@@ -1,16 +1,20 @@
-// Prisma schema — MVP 用 SQLite。
-// 之後要上雲端 Postgres（Supabase / Neon）時：
-//   1. 把 provider 改成 "postgresql"
-//   2. 把 .env 的 DATABASE_URL 換成雲端連線字串
-//   3. npx prisma db push
-// 程式碼完全不用改。
+// Prisma schema — 雲端 Postgres。
+//
+// DATABASE_URL 要放「一般的 postgres:// 連線字串」，例如
+//   postgres://USER:PASSWORD@pooled.db.prisma.io:5432/postgres   （Prisma Postgres 的 pooled TCP）
+//   postgres://USER:PASSWORD@<rds-endpoint>:5432/wowstylist      （之後換 AWS RDS）
+//
+// 如果 Vercel integration 給你的是 prisma+postgres://accelerate... 開頭的網址，
+// 去 Prisma Console 拿 pooled TCP 那條，不然要另外裝 @prisma/extension-accelerate。
+//
+// 改完連線字串後跑一次：npx prisma db push
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

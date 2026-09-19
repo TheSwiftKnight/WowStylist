@@ -36,6 +36,7 @@ export async function getLinks(): Promise<LinksResult> {
       links: rows.map((row) => ({
         id: row.id,
         url: row.url,
+        shortcode: row.shortcode,
         kind: row.kind,
         username: row.username,
         caption: row.caption,

@@ -42,7 +42,6 @@ export async function enrichLink(row: {
       ? {
           username: meta.username,
           caption: meta.caption,
-          mediaPath: meta.mediaPath,
           isVideo: meta.isVideo,
           fetchStatus: "ok",
           fetchedAt: new Date(),

@@ -8,6 +8,7 @@
 export type BoardLink = {
   id: number;
   url: string;
+  shortcode: string;
   kind: string;
   username: string | null;
   caption: string | null;
@@ -35,6 +36,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -1,
     url: "https://www.instagram.com/p/DdUXGzZyjeN/",
+    shortcode: "DdUXGzZyjeN",
     kind: "post",
     username: "atelier.linen",
     caption: "亞麻襯衫 + 奶油白長裙，初秋的鬆弛感穿搭。",
@@ -46,6 +48,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -2,
     url: "https://www.instagram.com/reel/DceqdZ0qzUY/",
+    shortcode: "DceqdZ0qzUY",
     kind: "reel",
     username: "quiet.wardrobe",
     caption: "一週五套老錢風通勤穿搭，主色只有燕麥米跟墨綠。",
@@ -57,6 +60,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -3,
     url: "https://www.instagram.com/p/Dcn_sFwsWDI/",
+    shortcode: "Dcn_sFwsWDI",
     kind: "post",
     username: "morningpaper.co",
     caption: "焦糖棕皮革配件的三種搭法。",
@@ -68,6 +72,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -4,
     url: "https://www.instagram.com/p/DcmYBQDA9bT/",
+    shortcode: "DcmYBQDA9bT",
     kind: "post",
     username: "studio.grisaille",
     caption: "灰調莫蘭迪色系的層次疊穿。",
@@ -79,6 +84,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -5,
     url: "https://www.instagram.com/reel/DdC3Fytju_R/",
+    shortcode: "DdC3Fytju_R",
     kind: "reel",
     username: "the.ballet.diary",
     caption: "芭蕾風針織 + 緞面裙，甜but不膩的版本。",
@@ -90,6 +96,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -6,
     url: "https://www.instagram.com/p/mock-06/",
+    shortcode: "mock-06",
     kind: "post",
     username: "hallway.notes",
     caption: "把西裝外套當襯衫穿，肩線要鬆一個尺寸。",
@@ -101,6 +108,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -7,
     url: "https://www.instagram.com/p/mock-07/",
+    shortcode: "mock-07",
     kind: "post",
     username: "salt.and.wool",
     caption: "霧霾藍 × 奶油白，冬天最安全的組合。",
@@ -112,6 +120,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -8,
     url: "https://www.instagram.com/reel/mock-08/",
+    shortcode: "mock-08",
     kind: "reel",
     username: "second.hand.girl",
     caption: "二手店挑外套的四個重點：肩線、內襯、鈕釦、下襬。",
@@ -123,6 +132,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -9,
     url: "https://www.instagram.com/p/mock-09/",
+    shortcode: "mock-09",
     kind: "post",
     username: "atelier.linen",
     caption: "學院風格紋裙的長度分水嶺。",
@@ -134,6 +144,7 @@ export const MOCK_LINKS: BoardLink[] = [
   {
     id: -10,
     url: "https://www.instagram.com/p/mock-10/",
+    shortcode: "mock-10",
     kind: "post",
     username: "quiet.wardrobe",
     caption: "中性帥氣：oversize 白襯衫、直筒褲、樂福鞋。",

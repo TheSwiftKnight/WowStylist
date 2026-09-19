@@ -13,6 +13,20 @@ const KIND_LABEL: Record<string, string> = {
 
 const PIN_VARIANTS = ["", " pin--slate", " pin--rust"];
 
+/** IG 官方 embed 的網址。不下載圖片，直接讓 IG 自己渲染。 */
+function embedSrc(shortcode: string, kind: string) {
+  const pathKind = kind === "reel" ? "reel" : kind === "tv" ? "tv" : "p";
+  return `https://www.instagram.com/${pathKind}/${shortcode}/embed/`;
+}
+
+/**
+ * embed iframe 沒有 IG 的 embed.js 就不會自己調高度，所以這裡按類型給固定比例。
+ * 影片（Reels）是 9:16 的直式，比方形貼文高很多。
+ */
+function embedRatio(kind: string, isVideo: boolean) {
+  return kind === "reel" || kind === "tv" || isVideo ? 0.5 : 0.78;
+}
+
 /** 由 id 推出固定的傾斜角與圖釘顏色，重新整理不會亂跳。 */
 function jitter(id: number) {
   const n = Math.abs(id * 2654435761) % 1000;
@@ -33,6 +47,8 @@ export default function PinnedCard({
   const router = useRouter();
   const [removed, setRemoved] = useState(false);
   const [busy, setBusy] = useState(false);
+  // public/media 沒有進 git，所以示範資料的圖在 Vercel 上是不存在的
+  const [imgFailed, setImgFailed] = useState(false);
   const { rotate, pinLeft, pin } = jitter(link.id);
 
   async function onDelete() {
@@ -78,48 +94,77 @@ export default function PinnedCard({
         aria-hidden="true"
       />
 
-      <a
-        className="pinned__link"
-        href={link.url}
-        target="_blank"
-        rel="noreferrer"
-      >
-        <div className="pinned__media">
-          {link.mediaPath ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={link.mediaPath}
-              alt={link.caption?.slice(0, 60) ?? "Instagram 貼文縮圖"}
-              loading="lazy"
-            />
-          ) : (
-            <div className="pinned__blank">
-              <span>尚未抓到圖片</span>
-            </div>
-          )}
-          {link.isVideo && (
-            <span className="pinned__play" aria-hidden="true">
-              ▶
-            </span>
-          )}
-        </div>
-
-        <div className="pinned__body">
-          {link.username && <div className="pinned__user">@{link.username}</div>}
-          <p
-            className={
-              link.caption ? "pinned__caption" : "pinned__caption is-empty"
+      {isMock ? (
+        // 示範資料沒有真的 IG 貼文可以 embed，用本機圖片或留白代替。
+        <a
+          className="pinned__link"
+          href={link.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <div className="pinned__media">
+            {link.mediaPath && !imgFailed ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={link.mediaPath}
+                alt={link.caption?.slice(0, 60) ?? "Instagram 貼文縮圖"}
+                loading="lazy"
+                onError={() => setImgFailed(true)}
+              />
+            ) : (
+              <div className="pinned__blank">
+                <span>示範資料</span>
+              </div>
+            )}
+            {link.isVideo && (
+              <span className="pinned__play" aria-hidden="true">
+                ▶
+              </span>
+            )}
+          </div>
+        </a>
+      ) : (
+        <div
+          className="pinned__embed"
+          style={{ aspectRatio: embedRatio(link.kind, link.isVideo) }}
+        >
+          <iframe
+            src={embedSrc(link.shortcode, link.kind)}
+            title={
+              link.username
+                ? `@${link.username} 的 Instagram 貼文`
+                : "Instagram 貼文"
             }
-          >
-            {link.caption ?? "（沒有文字內容）"}
-          </p>
+            loading="lazy"
+            scrolling="no"
+            allowFullScreen
+          />
         </div>
-      </a>
+      )}
+
+      <div className="pinned__body">
+        {link.username && <div className="pinned__user">@{link.username}</div>}
+        <p
+          className={
+            link.caption ? "pinned__caption" : "pinned__caption is-empty"
+          }
+        >
+          {link.caption ?? "（沒有文字內容）"}
+        </p>
+      </div>
 
       <div className="pinned__foot">
         <span className="pinned__kind">{KIND_LABEL[link.kind] ?? "IG"}</span>
         <span>{date}</span>
         <span className="pinned__spacer" />
+        <a
+          className="pinned__open"
+          href={link.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          開原文
+        </a>
         <button
           className="btn btn--tiny"
           onClick={onDelete}

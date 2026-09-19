@@ -2,8 +2,11 @@
 // 策略 A：抓 https://www.instagram.com/p/<code>/embed/captioned/（公開 embed 頁）
 // 策略 B：抓貼文主頁的 OG meta tags（og:image / og:title / og:description）。
 //         LINE、Slack 能顯示 IG 連結預覽就是讀這些 tags，所以對爬蟲 UA 是開放的。
-// 兩個都失敗時，會把抓到的 HTML 存到 debug_html/ 方便排查。
-// IG 的圖片 CDN 網址帶簽名、幾天後會過期，所以抓到後下載到 public/media/ 保存。
+// 兩個都失敗時，會把抓到的 HTML 存到 debug_html/ 方便排查（只在本機 dev，
+// Vercel 的檔案系統是唯讀的）。
+//
+// 圖片不再下載到 public/media/ —— 前端改用 IG 官方 embed iframe 顯示，
+// 這裡只負責抓 username / caption / 是不是影片這些文字 metadata。
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,7 +19,6 @@ const CRAWLER_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhi
 export type IgMeta = {
   username: string | null;
   caption: string | null;
-  mediaPath: string | null; // 本機路徑，如 /media/xxx.jpg
   isVideo: boolean;
 };
 
@@ -71,6 +73,8 @@ async function fetchHtml(url: string, ua: string): Promise<string | null> {
 }
 
 async function dumpDebugHtml(name: string, html: string): Promise<void> {
+  // Vercel（以及任何 production build）的檔案系統唯讀，寫了會噴 EROFS
+  if (process.env.VERCEL || process.env.NODE_ENV === "production") return;
   try {
     const dir = path.join(process.cwd(), "debug_html");
     await fs.mkdir(dir, { recursive: true });
@@ -82,15 +86,6 @@ async function dumpDebugHtml(name: string, html: string): Promise<void> {
 }
 
 // ---------- 策略 A：embed 頁 ----------
-
-function parseEmbedImage(html: string): string | null {
-  const raw = matchFirst(html, [
-    /class="EmbeddedMediaImage"[^>]*\ssrc="([^"]+)"/,
-    /"display_url"\s*:\s*"([^"]+)"/,
-    /\\"display_url\\":\\"(.*?)\\"/,
-  ]);
-  return raw ? decodeHtmlEntities(unescapeJsonString(raw)) : null;
-}
 
 function parseEmbedUsername(html: string): string | null {
   const raw = matchFirst(html, [
@@ -138,10 +133,8 @@ function ogContent(html: string, prop: string): string | null {
 function parseOgMeta(html: string): {
   username: string | null;
   caption: string | null;
-  imageUrl: string | null;
   isVideo: boolean;
 } {
-  const imageUrl = ogContent(html, "og:image");
   const title = ogContent(html, "og:title"); // 通常是：Username on Instagram: "caption…"
   const desc = ogContent(html, "og:description"); // 通常是：N likes, M comments - username on Date: "caption"
 
@@ -167,30 +160,7 @@ function parseOgMeta(html: string): {
     ogContent(html, "og:video") || /property="og:type"[^>]*content="video/i.test(html)
   );
 
-  return { username, caption: caption || null, imageUrl, isVideo };
-}
-
-// ---------- 圖片下載 ----------
-
-async function downloadImage(imageUrl: string, shortcode: string): Promise<string | null> {
-  try {
-    const res = await fetch(imageUrl, {
-      headers: { "User-Agent": BROWSER_UA, Referer: "https://www.instagram.com/" },
-    });
-    if (!res.ok) {
-      console.error(`[igFetch] 下載圖片失敗 HTTP ${res.status}`);
-      return null;
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    const dir = path.join(process.cwd(), "public", "media");
-    await fs.mkdir(dir, { recursive: true });
-    const filename = `${shortcode}.jpg`;
-    await fs.writeFile(path.join(dir, filename), buf);
-    return `/media/${filename}`;
-  } catch (e) {
-    console.error("[igFetch] 下載圖片失敗:", e);
-    return null;
-  }
+  return { username, caption: caption || null, isVideo };
 }
 
 // ---------- 主流程 ----------
@@ -204,19 +174,17 @@ export async function fetchIgMeta(shortcode: string, kind: string): Promise<IgMe
 
   let username: string | null = null;
   let caption: string | null = null;
-  let imageUrl: string | null = null;
   let isVideo = kind === "reel" || kind === "tv";
 
   if (embedHtml) {
     username = parseEmbedUsername(embedHtml);
     caption = parseEmbedCaption(embedHtml, username);
-    imageUrl = parseEmbedImage(embedHtml);
     isVideo =
       isVideo || /"is_video"\s*:\s*true/.test(embedHtml) || /\\"is_video\\":true/.test(embedHtml);
   }
 
   // 策略 B：embed 頁沒挖到東西 → 抓主頁的 OG tags（用爬蟲 UA）
-  if (!username && !caption && !imageUrl) {
+  if (!username && !caption) {
     console.log(`[igFetch] ${shortcode} embed 頁解析不出內容，改用 OG tags`);
     const pageUrl = `https://www.instagram.com/${pathKind}/${shortcode}/`;
     const pageHtml = await fetchHtml(pageUrl, CRAWLER_UA);
@@ -224,9 +192,8 @@ export async function fetchIgMeta(shortcode: string, kind: string): Promise<IgMe
       const og = parseOgMeta(pageHtml);
       username = og.username;
       caption = og.caption;
-      imageUrl = og.imageUrl;
       isVideo = isVideo || og.isVideo;
-      if (!og.username && !og.caption && !og.imageUrl) {
+      if (!og.username && !og.caption) {
         await dumpDebugHtml(`${shortcode}-page`, pageHtml);
         if (embedHtml) await dumpDebugHtml(`${shortcode}-embed`, embedHtml);
       }
@@ -235,17 +202,15 @@ export async function fetchIgMeta(shortcode: string, kind: string): Promise<IgMe
     }
   }
 
-  const mediaPath = imageUrl ? await downloadImage(imageUrl, shortcode) : null;
-
-  if (!username && !caption && !mediaPath) {
-    console.error(`[igFetch] ${shortcode} 兩種方式都解析不出內容（HTML 已存 debug_html/）`);
+  if (!username && !caption) {
+    console.error(`[igFetch] ${shortcode} 兩種方式都解析不出文字內容`);
     return null;
   }
 
   console.log(
     `[igFetch] ${shortcode} → user=${username ?? "-"} caption=${
       caption ? caption.slice(0, 30) + "…" : "-"
-    } img=${mediaPath ?? "-"} video=${isVideo}`
+    } video=${isVideo}`
   );
-  return { username, caption, mediaPath, isVideo };
+  return { username, caption, isVideo };
 }

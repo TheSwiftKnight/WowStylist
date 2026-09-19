@@ -615,25 +615,12 @@ button {
   margin: 18px 0 34px;
 }
 
-/* 小紅書式 masonry */
+/* 小紅書式 masonry。
+   欄寬用 column-width（最少 336px）而不是寫死欄數 —— IG 的 embed iframe
+   低於 326px 就會出現內部捲軸，所以寧可少一欄也不要壓窄。 */
 .pinboard {
-  columns: 4;
+  columns: 336px 4;
   column-gap: clamp(16px, 2vw, 26px);
-}
-@media (max-width: 1240px) {
-  .pinboard {
-    columns: 3;
-  }
-}
-@media (max-width: 880px) {
-  .pinboard {
-    columns: 2;
-  }
-}
-@media (max-width: 520px) {
-  .pinboard {
-    columns: 1;
-  }
 }
 
 .pinned {
@@ -689,6 +676,32 @@ button {
   font-size: 10px;
   letter-spacing: 0.16em;
   color: var(--ink-faint);
+}
+
+.pinned__embed {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: var(--paper-cool);
+  border: 1px solid rgba(199, 189, 166, 0.5);
+}
+.pinned__embed iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+.pinned__open {
+  color: var(--ink-faint);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(140, 128, 114, 0.4);
+}
+.pinned__open:hover {
+  color: var(--rust);
+  border-bottom-color: var(--rust);
 }
 
 .pinned__play {
