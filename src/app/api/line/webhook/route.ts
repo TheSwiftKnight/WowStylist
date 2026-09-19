@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
+import { extractAnyUrls } from "@/lib/url";
 import { requestIngest } from "@/lib/pipeline";
 import { createFailedJob } from "@/lib/jobs";
 import { generateChatReply } from "@/lib/chat";
@@ -8,14 +9,16 @@ import { generateChatReply } from "@/lib/chat";
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
 //
-// 流程：驗證簽章 → 解析事件 → 抓出 IG 連結 → 回覆使用者
-//       → 回應送出「之後」才把連結送進分析 pipeline（after()）。
+// 路由邏輯（三路）：
+//   1. 含 IG 連結  → 回覆「正在分析」，背景送進分析 pipeline（after()）
+//   2. 含其他 URL  → 交給 LLM，附上「偵測到非 IG 連結」的上下文
+//   3. 純文字      → 交給 LLM 做穿搭對話
 //
-// pipeline 那端（./pipeline 的 FastAPI）也是立刻回 job id 就結束，
-// Apify → Claude Vision → BGE-M3 → 寫 RDS 全部在它自己的背景跑。
-// 所以這裡是「兩層非同步」：
+// 路徑 1 是「兩層非同步」：
 //   LINE 秒收到回覆 → Next.js 背景送件 → Python 背景分析
-// 使用者在網頁上看到的進度來自 ingest_jobs 表（GET /api/jobs）。
+// 因為整條 pipeline（Apify + 每張圖一次 Claude Vision + 每件衣服一次 BGE-M3）
+// 要跑幾十秒到幾分鐘，而 LINE 的 replyToken 只有幾秒，serverless 也有執行
+// 時間上限。使用者在網頁上看到的進度來自 ingest_jobs 表（GET /api/jobs）。
 
 export const dynamic = "force-dynamic";
 
@@ -111,54 +114,69 @@ export async function POST(req: Request) {
 
     const text = event.message.text ?? "";
     console.log(`[webhook] 文字訊息: ${text.slice(0, 120)}`);
-    const links = extractIgLinks(text);
-    console.log(`[webhook] 解析出 ${links.length} 個 IG 連結`);
 
-    if (links.length === 0) {
-      // 不是 IG 連結 → 走對話引擎（src/lib/chat.ts，由 CHAT_PROVIDER 決定用哪家 LLM）
+    // ── 路由判斷 ─────────────────────────────────────────────────
+    const igLinks = extractIgLinks(text);
+    const allUrls = extractAnyUrls(text);
+    // 非 IG 的 URL（排除已被 IG 正規化處理的）
+    const nonIgUrls = allUrls.filter((u) => !u.includes("instagram.com"));
+
+    console.log(
+      `[webhook] IG 連結 ${igLinks.length} 個、非 IG URL ${nonIgUrls.length} 個`
+    );
+
+    // ── 路徑 1：有 IG 連結 → 收藏 + 分析流程 ─────────────────────
+    if (igLinks.length > 0) {
+      const senderId = event.source?.userId ?? null;
+      const senderName = senderId ? await getSenderName(senderId) : null;
+
+      // 先回覆，再送件。LINE 的 replyToken 只有幾秒可以用，
+      // 而 requestIngest 要跨行程打 FastAPI，不能擋在回覆前面。
       if (event.replyToken) {
-        const answer = await generateChatReply(event.source?.userId ?? null, text);
-        await replyText(event.replyToken, answer);
+        await replyText(
+          event.replyToken,
+          `收到！正在分析 ${igLinks.length} 則貼文的穿搭，完成後就會出現在收藏夾 ✅`
+        );
       }
+
+      after(async () => {
+        for (const link of igLinks) {
+          try {
+            const ticket = await requestIngest(link.url, {
+              sourceText: text,
+              senderId,
+              senderName,
+            });
+            console.log(
+              `[webhook] ${link.shortcode} 已送進 pipeline（job ${ticket.jobId}）`
+            );
+          } catch (e) {
+            console.error(`[webhook] ${link.shortcode} 送件失敗:`, e);
+
+            // 送不出去也要留下痕跡，不然前端完全不知道發生什麼事
+            await createFailedJob(link.url, String(e), {
+              shortcode: link.shortcode,
+              sourceText: text,
+              senderId,
+              senderName,
+            });
+          }
+        }
+      });
+
       continue;
     }
 
-    const senderId = event.source?.userId ?? null;
-    const senderName = senderId ? await getSenderName(senderId) : null;
-
-    // 先回覆，再送件。LINE 的 replyToken 只有幾秒可以用，
-    // 而 requestIngest 要跨機器打 FastAPI，不能擋在回覆前面。
+    // ── 路徑 2 & 3：非 IG URL 或純文字 → LLM 對話 ──────────────
+    // nonIgUrls 若有值，chat.ts 會把連結帶進 prompt 讓 LLM 知道上下文
     if (event.replyToken) {
-      await replyText(
-        event.replyToken,
-        `收到！正在分析 ${links.length} 則貼文的穿搭，完成後就會出現在收藏夾 ✅`
+      const answer = await generateChatReply(
+        event.source?.userId ?? null,
+        text,
+        nonIgUrls.length > 0 ? nonIgUrls : undefined
       );
+      await replyText(event.replyToken, answer);
     }
-
-    after(async () => {
-      for (const link of links) {
-        try {
-          const ticket = await requestIngest(link.url, {
-            sourceText: text,
-            senderId,
-            senderName,
-          });
-          console.log(
-            `[webhook] ${link.shortcode} 已送進 pipeline（job ${ticket.jobId}）`
-          );
-        } catch (e) {
-          console.error(`[webhook] ${link.shortcode} 送件失敗:`, e);
-
-          // 送不出去也要留下痕跡，不然前端完全不知道發生什麼事
-          await createFailedJob(link.url, String(e), {
-            shortcode: link.shortcode,
-            sourceText: text,
-            senderId,
-            senderName,
-          });
-        }
-      }
-    });
   }
 
   // LINE 只要求回 200，內容不重要；出錯也盡量回 200 避免 LINE 重送轟炸
