@@ -180,19 +180,19 @@ async function callLLM(
 function chatWithRules(text: string): string {
   const t = text.trim().toLowerCase();
   if (/怎麼用|怎么用|幫助|help|說明/.test(t)) {
-    return "使用方式：\n1️⃣ 收藏穿搭 → 把 Instagram 貼文/Reels 連結傳過來\n2️⃣ 穿搭建議 → 用文字描述場合、風格、預算，例如「秋天約會穿搭，預算 2000」\n3️⃣ 查看收藏 → 打「收藏夾」或到網頁瀏覽 ✨";
+    return "(debug message: rules, not LLM)\n使用方式：\n1️⃣ 收藏穿搭 → 把 Instagram 貼文/Reels 連結傳過來\n2️⃣ 穿搭建議 → 用文字描述場合、風格、預算，例如「秋天約會穿搭，預算 2000」\n3️⃣ 查看收藏 → 打「收藏夾」或到網頁瀏覽 ✨";
   }
   if (/收藏夾|我的收藏|看收藏/.test(t)) {
     const url = process.env.SITE_URL ? `${process.env.SITE_URL}/favorites` : "網頁收藏夾";
     return `你的 IG 穿搭收藏在這裡 👉 ${url}`;
   }
   if (/你好|嗨|哈囉|hi|hello/.test(t)) {
-    return "嗨嗨！我是你的穿搭助手 ✨\n• 傳 IG 連結給我 → 自動收藏\n• 說出場合和預算 → 我給穿搭建議\n打「怎麼用」看更多說明！";
+    return "(debug message: rules, not LLM)\n嗨嗨！我是你的穿搭助手 ✨\n• 傳 IG 連結給我 → 自動收藏\n• 說出場合和預算 → 我給穿搭建議\n打「怎麼用」看更多說明！";
   }
   if (/穿搭|穿什麼|怎麼穿|搭配/.test(t)) {
-    return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
+    return "(debug message: rules, not LLM)\n告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
   }
-  return "我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
+  return "(debug message: rules, not LLM)\n我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
 }
 
 // ── 組裝送給 LLM 的 user message（附上非 IG URL 上下文） ─────────────────────
