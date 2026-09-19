@@ -1,11 +1,14 @@
-// Prisma schema — 雲端 Postgres。
+// Prisma schema — 雲端 Postgres（Prisma Postgres）。
 //
-// DATABASE_URL 要放「一般的 postgres:// 連線字串」，例如
-//   postgres://USER:PASSWORD@pooled.db.prisma.io:5432/postgres   （Prisma Postgres 的 pooled TCP）
-//   postgres://USER:PASSWORD@<rds-endpoint>:5432/wowstylist      （之後換 AWS RDS）
+// 兩條連線字串，帳密一樣、只差主機名：
+//   DATABASE_URL → pooled.db.prisma.io  跑在 serverless 上的查詢走這條（經過連線池）
+//   DIRECT_URL   → db.prisma.io         prisma db push / migrate / studio 走這條（繞過連線池）
 //
-// 如果 Vercel integration 給你的是 prisma+postgres://accelerate... 開頭的網址，
-// 去 Prisma Console 拿 pooled TCP 那條，不然要另外裝 @prisma/extension-accelerate。
+// 兩條都是 postgres://USER:PASSWORD@<host>:5432/postgres?sslmode=require
+// Vercel integration 預設只給 direct 那條（PRISMA_DATABASE_URL / POSTGRES_URL），
+// pooled 的自己把 host 換成 pooled.db.prisma.io 就好。
+//
+// 之後換 AWS RDS：DATABASE_URL 指到 RDS Proxy、DIRECT_URL 指到 RDS 本體。
 //
 // 改完連線字串後跑一次：npx prisma db push
 
@@ -14,8 +17,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")  // pooled，app 執行時用
+  directUrl = env("DIRECT_URL")    // direct，CLI 做 schema 變更時用
 }
 
 // 使用者透過 LINE 分享進來的 Instagram 連結

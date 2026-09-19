@@ -8,6 +8,7 @@ out/
 # env
 .env
 .env*.local
+.env.bak.*
 
 # database (SQLite, MVP only)
 prisma/dev.db
@@ -23,3 +24,8 @@ debug_html/
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+# style KB 爬取的原始 HTML 快取（可重建，不進版控）
+data/style-kb/cache/
+data/style-kb/debug/
+data/style-kb/dry_hits.jsonl
