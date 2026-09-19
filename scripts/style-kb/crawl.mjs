@@ -10,14 +10,15 @@
 //   node scripts/style-kb/crawl.mjs --concurrency 5     # 同時處理幾個風格
 //   node scripts/style-kb/crawl.mjs --refetch           # 不用 Exa 內文，強制抓原頁
 //   node scripts/style-kb/crawl.mjs --llm openai
+//   node scripts/style-kb/crawl.mjs --llm-model google/gemma-4-26b-a4b-it:free
 import "./lib/env.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PATHS, CRAWL } from "./config.mjs";
+import { PATHS, CRAWL, EXTRACT } from "./config.mjs";
 import { searchStyle } from "./lib/search.mjs";
 import { getHtml } from "./lib/http.mjs";
 import { parseArticle } from "./lib/article.mjs";
-import { extractOutfits, buildRecord, validateOutfit, outfitKey, pickProvider } from "./lib/extract.mjs";
+import { extractOutfits, buildRecord, validateOutfit, outfitKey, pickProvider, setModel, currentModel } from "./lib/extract.mjs";
 import { loadKb, appendRecord, appendMiss, append } from "./lib/store.mjs";
 
 const argv = process.argv.slice(2);
@@ -31,6 +32,7 @@ const has = (n) => argv.includes(`--${n}`);
 
 const provider = flag("provider", "exa");          // 搜尋層
 const llm = flag("llm", null);                     // 抽取層
+if (flag("llm-model")) setModel(String(flag("llm-model")));
 const dry = has("dry");
 const refetch = has("refetch");
 const WANT = Number(flag("outfits", CRAWL.outfitsPerStyle));
@@ -48,7 +50,8 @@ if (flag("style")) {
 if (flag("limit")) styles = styles.slice(0, Number(flag("limit")));
 
 if (!dry) {
-  try { console.log(`抽取層 provider：${pickProvider(llm)}｜每個風格目標 ${WANT} 套｜同時 ${CONC} 個風格`); }
+  try { const p = pickProvider(llm);
+  console.log(`抽取層：${p} / ${currentModel(p)}｜每個風格目標 ${WANT} 套｜同時 ${CONC} 個風格｜timeout ${EXTRACT.timeoutMs / 1000}s`); }
   catch (e) { console.error(e.message); process.exit(1); }
 }
 if (dry) {

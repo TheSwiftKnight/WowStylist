@@ -59,11 +59,28 @@ export const CRAWL = {
 export const EXTRACT = {
   defaultProvider: process.env.KB_LLM_PROVIDER || "openrouter",
   model: {
-    openrouter: process.env.KB_EXTRACT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
+    // bench 實測（同一篇 balletcore 文章，2026-09-20）：
+    //   deepseek-v4-flash   92.1s  4/4 合格  ← 選它，每秒產出是 Ultra 的 3.3 倍
+    //   nemotron-3-ultra   226.4s  3/3 合格
+    //   nemotron-3.5-light 166.7s  2/2 合格
+    // 品質三者都可用（已入庫的 23 套描述平均 101 字），差別主要在速度。
+    openrouter: process.env.KB_EXTRACT_MODEL || "deepseek/deepseek-v4-flash-0731:free",
     openai: process.env.KB_EXTRACT_MODEL || "gpt-4o-mini",
     anthropic: process.env.KB_EXTRACT_MODEL || "claude-haiku-4-5",
   },
   maxTokens: 8000,
+  // ⚠️ 這個值太小是災難：請求被 abort 之後會重打，但配額照算、時間白等。
+  // Nemotron free 單次 1–3 分鐘很正常，所以給足 300 秒，寧可等也不要重打。
+  timeoutMs: Number(process.env.KB_LLM_TIMEOUT_MS || 300000),
+  retries: 1,
+  // bench.mjs 要比較的候選模型（都支援 tool calling、都是 OpenRouter 免費層）。
+  // Nemotron Ultra 是 550B reasoning model，慢是它的天性；這裡放幾個小很多的對照組。
+  benchModels: [
+    "deepseek/deepseek-v4-flash-0731:free",     // 現行預設
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-26b-a4b-it:free",           // 實測常被 provider 429
+  ],
   // 填欄位不需要長考。"low" 省配額也大幅降延遲；設成 "" 就不帶這個參數。
   reasoningEffort: process.env.KB_REASONING_EFFORT ?? "low",
   // 送進 LLM 的內文上限。這是延遲的主要來源之一，砍短比什麼都有效。
@@ -73,7 +90,7 @@ export const EXTRACT = {
 // 收錄門檻（lib/extract.mjs 的 validateOutfit()）
 export const ACCEPT = {
   requireTopAndBottom: true, // items 一定要有 top 和 bottom，否則組不成一套
-  minDescriptionChars: 15,   // description 太短代表模型在敷衍
+  minDescriptionChars: Number(process.env.KB_MIN_DESC || 25), // 太短的 description embed 起來沒訊息量
   minConfidence: 0.5,
   requireDo: true,
   maxOovRatio: 0.5,

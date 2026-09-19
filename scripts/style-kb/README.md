@@ -67,6 +67,9 @@ node scripts/style-kb/try-one.mjs cottagecore "https://www.whowhatwear.com/..." 
 
 # ⑥ 覆蓋率報告
 node scripts/style-kb/report.mjs
+
+# ⑦ 比較模型速度（同一篇文章打不同模型，選出最划算的）
+node scripts/style-kb/bench.mjs balletcore
 ```
 
 ### 續跑
@@ -181,6 +184,42 @@ Nemotron 550B free 一次呼叫 1–2 分鐘，所以**減少呼叫次數比什�
 | 砍短內文 | `EXTRACT.maxArticleChars` | 預設 9000 字，input token 直接影響延遲 |
 | 降 reasoning | `EXTRACT.reasoningEffort` | 預設 `low`；填欄位不需要長考 |
 | 磁碟快取 | `data/style-kb/cache/` | 只在 `--refetch` 時才用得到 |
+| 足夠的 timeout | `EXTRACT.timeoutMs` | **最容易踩的坑，見下** |
+
+### ⚠️ timeout 設太小會變成三倍慢
+
+原本 timeout 是 120 秒，但 Nemotron free 單次呼叫 1–3 分鐘很正常。超過就被 abort →
+自動重打 → 再等一輪。實測日誌裡的 `342.1s` 其實是
+`120(abort) + 2 + 120(abort) + 4 + 96(成功)`：**打了 3 次 API、燒 3 倍配額、白等 240 秒**。
+
+現在 timeout 拉到 300 秒，而且**逾時預設不重試**（重打只會再等一輪，配額照算）。
+同一批工作應該會從「動輒 180–340 秒」收斂到「一次 60–120 秒」。
+
+### 換模型
+
+Nemotron Ultra 是 550B reasoning model，慢是它的天性。同一把 OpenRouter key 可以直接打
+別的免費模型，`bench.mjs` 會用同一篇文章比較速度與合格套數：
+
+```bash
+node scripts/style-kb/bench.mjs balletcore
+# 選好之後
+echo 'KB_EXTRACT_MODEL=<slug>' >> .env
+# 或單次
+node scripts/style-kb/crawl.mjs --llm-model google/gemma-4-26b-a4b-it:free
+```
+
+候選清單在 `config.mjs` 的 `EXTRACT.benchModels`（都支援 tool calling、都是免費層）。
+
+2026-09-20 實測（同一篇 balletcore 文章，目標 5 套）：
+
+| 模型 | 秒 | 回/合格 | 備註 |
+|---|---|---|---|
+| `deepseek/deepseek-v4-flash-0731:free` | 92.1 | 4 / 4 | **現行預設** |
+| `nvidia/nemotron-3.5-lightning:free` | 166.7 | 2 / 2 | |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 226.4 | 3 / 3 | 舊預設 |
+| `google/gemma-4-26b-a4b-it:free` | — | — | provider 回 429 |
+| `nvidia/nemotron-3-super-120b-a12b:free` | — | — | provider 直接回錯誤 |
+| `inclusionai/ling-3.0-flash-vl:free` | 76.2 | 1 / 0 | 輸出撞 max_tokens |
 
 再更快的話：
 

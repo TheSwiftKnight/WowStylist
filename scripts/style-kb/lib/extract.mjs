@@ -51,6 +51,13 @@ const SCHEMA = {
 
 const TOOL_NAME = "emit_outfits";
 
+// 讓 crawl.mjs / bench.mjs 可以臨時換模型，不用改 .env
+let OVERRIDE_MODEL = null;
+export function setModel(m) { OVERRIDE_MODEL = m || null; }
+export function currentModel(provider = EXTRACT.defaultProvider) {
+  return OVERRIDE_MODEL || EXTRACT.model[provider];
+}
+
 function buildPrompt(style, article, want) {
   return `你是穿搭知識庫的結構化抽取器。輸出會餵給向量檢索與商品庫查詢。
 
@@ -92,9 +99,17 @@ async function dumpDebug(tag, payload) {
  * reasoning），tool_call 的 arguments 常是寬鬆 JSON，所以一律走 parseLooseJson。
  */
 export async function parseOpenAICompatible(res, tag) {
+  // OpenRouter 常常用 HTTP 200 包一個 {error:{message,code}} 回來
+  if (res.error) {
+    const f = await dumpDebug(`${tag}-error`, res);
+    throw new Error(`provider 回錯誤 [${res.error.code ?? "?"}]：${String(res.error.message).slice(0, 160)}${f ? ` → ${f}` : ""}`);
+  }
   const choice = res.choices?.[0];
   const msg = choice?.message;
-  if (!msg) { await dumpDebug(tag, res); throw new Error("回應沒有 message"); }
+  if (!msg) {
+    const f = await dumpDebug(tag, res);
+    throw new Error(`回應沒有 message（${JSON.stringify(res).slice(0, 160)}）${f ? ` → ${f}` : ""}`);
+  }
 
   if (choice.finish_reason === "length") {
     const f = await dumpDebug(`${tag}-truncated`, res);
@@ -113,9 +128,12 @@ export async function parseOpenAICompatible(res, tag) {
   }
 }
 
+const URL_OR = "https://openrouter.ai/api/v1/chat/completions";
+const NET = () => ({ timeoutMs: EXTRACT.timeoutMs, retries: EXTRACT.retries });
+
 async function viaOpenRouter(style, article, want) {
   const base = {
-    model: EXTRACT.model.openrouter,
+    model: OVERRIDE_MODEL || EXTRACT.model.openrouter,
     max_tokens: EXTRACT.maxTokens,
     temperature: 0,
     tools: [{ type: "function", function: { name: TOOL_NAME, description: "輸出結構化穿搭", parameters: SCHEMA } }],
@@ -130,9 +148,9 @@ async function viaOpenRouter(style, article, want) {
   };
   let res;
   try {
-    res = await postJson("https://openrouter.ai/api/v1/chat/completions", body, headers);
+    res = await postJson(URL_OR, body, headers, NET());
   } catch (e) {
-    if (/reasoning/i.test(e.message)) res = await postJson("https://openrouter.ai/api/v1/chat/completions", base, headers);
+    if (/reasoning/i.test(e.message)) res = await postJson(URL_OR, base, headers, NET());
     else throw e;
   }
   return { data: await parseOpenAICompatible(res, `openrouter-${style.key}`), usage: res.usage };
@@ -148,6 +166,7 @@ async function viaOpenAI(style, article, want) {
       messages: [{ role: "user", content: buildPrompt(style, article, want) }],
     },
     { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    NET(),
   );
   return { data: await parseOpenAICompatible(res, `openai-${style.key}`), usage: res.usage };
 }
@@ -162,6 +181,7 @@ async function viaAnthropic(style, article, want) {
       messages: [{ role: "user", content: buildPrompt(style, article, want) }],
     },
     { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+    NET(),
   );
   const tool = (res.content || []).find((c) => c.type === "tool_use");
   if (!tool) throw new Error("模型沒有回 tool_use");

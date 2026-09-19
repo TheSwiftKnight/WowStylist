@@ -12,7 +12,8 @@
     "richmenu": "node scripts/richmenu.mjs",
     "kb:crawl": "node scripts/style-kb/crawl.mjs",
     "kb:crawl:dry": "node scripts/style-kb/crawl.mjs --dry",
-    "kb:report": "node scripts/style-kb/report.mjs"
+    "kb:report": "node scripts/style-kb/report.mjs",
+    "kb:bench": "node scripts/style-kb/bench.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.16.0",
