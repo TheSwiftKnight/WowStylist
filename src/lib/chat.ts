@@ -57,13 +57,13 @@ const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根�
 [風格: {最多5個相符的中文風格名，逗號分隔；若無匹配則省略此行}]
 {使用者原始訊息（移除價格相關文字）}
 [item: {已知衣物的詳細描述，英文，包含 color/style/material 等特徵，例如：navy slim-fit wool blazer}]
-[keywords: {5~10個英文名詞或形容詞，空格分隔，例如：navy slim formal blazer business clean}]
+[keywords: {5~10個英文名詞或形容詞，逗號分隔，例如：navy, slim, formal, blazer, business, clean}]
 [price: {若有，英文描述，例如：under NT$2000；否則省略此行}]
 
 ### C（找完整穿搭）
 [風格: {最多5個相符的中文風格名，逗號分隔；若無匹配則省略此行}]
 {使用者原始訊息（移除價格相關文字）}
-[keywords: {5~10個英文名詞或形容詞，空格分隔，涵蓋場合、風格、限制，例如：wedding guest formal light-color elegant feminine}]
+[keywords: {5~10個英文名詞或形容詞，逗號分隔，涵蓋場合、風格、限制，例如：wedding guest, formal, light-color, elegant, feminine}]
 [price: {若有，英文描述，例如：under NT$3000；否則省略此行}]`;
 
 // LLM 回傳結果，content=null 時 reason 說明失敗原因（會直接出現在 DEBUG LINE 訊息裡）
