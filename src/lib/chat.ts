@@ -1,67 +1,57 @@
 // 打字對話的核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
-//   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY，用 CHAT_MODEL 指定模型）
+//   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY，預設 nvidia/nemotron-3-ultra-550b-a55b:free）
 //   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY）
 //   - "openai"     : OpenAI API（需 OPENAI_API_KEY）
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
-// OpenRouter 推薦模型範例（設在 CHAT_MODEL）：
-//   nvidia/nemotron-3-ultra-550b-a55b:free ← 預設，免費
-//   google/gemini-flash-1.5
-//   anthropic/claude-haiku-4-5
-//   openai/gpt-4o-mini
-//   meta-llama/llama-3.1-8b-instruct
-//
 // 核心流程（LLM 模式）：
-//   Step 1: analyzeIntent()     — 用 LLM 分析使用者語意，抽出場合/風格/預算/隱含條件
-//   Step 2: enrichUserMessage() — 把分析結果附在原始訊息後面
-//   Step 3: 帶著 enriched message + 對話歷史，呼叫主 LLM 產生回覆
+//   單一 LLM 呼叫：分類意圖（A/B/C）→ 抽取標籤 → 輸出結構化結果
+//
+// 意圖類型：
+//   A：找「一件特定單品」，給限制條件，不需要搭配
+//   B：已有「一件指定衣物」，找可以互相搭配的其他衣物
+//   C：針對「場合/情境」，找完整一套穿搭，沒有指定衣物
 
-// ── Prompt：語意分析（Step 1 專用，輕量，只抽資訊不回覆） ──────────────────
-const ANALYSIS_SYSTEM_PROMPT = `你是穿搭需求分析器，只負責從使用者的訊息中抽取穿搭相關資訊。
+// ── Prompt：意圖分類器 ────────────────────────────────────────────────────────
+const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根據使用者輸入，判斷意圖並輸出結構化結果。
 
-輸出格式（一行繁體中文，只列出能確定的項目）：
-[意圖] 場合=X｜風格=X｜預算=X｜性別=X｜隱含=X
+## 意圖類型定義
+- A：找「一件特定單品」——使用者給出條件（顏色、材質、款式等），想找某類型的單品，不涉及搭配
+- B：「已有一件指定衣物」——使用者描述手邊某件衣物，想找其他可以和它搭配的衣物
+- C：針對「場合或情境」——使用者描述要去哪裡或做什麼，想找完整一套穿搭，沒有指定任何特定衣物
+- 其他：閒聊、問候、詢問使用方式
 
-意圖選項：找整套穿搭／找單品／有某件找剩餘搭配／詢問使用方式／閒聊
-- 若是閒聊或問候，只輸出「[閒聊]」
-- 若是詢問使用方式，只輸出「[使用說明]」
-- 隱含條件從場合推斷（例：婚禮→不能搶新娘風采、上班→不能太暴露）
-- 無法確定的項目直接省略，不要填「未知」`;
+## 價格處理
+若輸入中有價格相關描述（預算、元、NT$、以內、便宜、高價位等），
+→ 抽取為獨立的 [價格] 標籤
+→ 並從主要描述中移除這段文字
 
-// ── Prompt：主對話（Step 3，穿搭顧問角色） ──────────────────────────────────
-const STYLIST_SYSTEM_PROMPT = `你是 WowStylist 的時尚穿搭助手，說繁體中文，語氣親切自然（回覆不超過 4 句）。
+## 輸出規則（嚴格遵守以下格式，不要輸出任何說明文字）
 
-## 你的職責
-1. **穿搭建議**：根據使用者描述的場合、風格、預算，給出具體建議。
-   訊息後方的「[需求分析：...]」是系統幫你整理好的結構化資訊，請善用它來給更精準的建議。
-2. **風格分析**：使用者傳來非 IG 連結時，引導他說出喜歡的風格或元素。
-3. **收藏說明**：使用者問怎麼收藏時，告訴他傳 IG 連結就會自動收藏。
+### 其他（閒聊 / 問候 / 使用說明）
+直接輸出使用者原始訊息，不添加任何標籤。
 
-## 回覆原則
-- 穿搭建議要具體：至少說清楚上衣和下半身，有餘裕再加外套和鞋
-- 最多問一個最關鍵的追問（場合？預算？性別？），不要連問
-- 不確定的事老實說，不要編造
-- 收到非 IG 連結時：告訴使用者目前只能收藏 IG 連結，請他描述喜歡那個連結的哪個部分`;
+### A（找單品）
+直接輸出使用者原始訊息，不添加任何標籤。
 
-// ── 對話記憶 ─────────────────────────────────────────────────────────────────
-type ChatTurn = { role: "user" | "assistant"; content: string };
-const histories = new Map<string, ChatTurn[]>();
-const MAX_TURNS = 10;
+### B（有指定衣物，找搭配）
+{使用者原始訊息（移除價格相關文字）}
+[已知單品: {已知衣物的詳細描述，包含顏色、款式、材質等特徵}]
+[搭配關鍵字: {5~10個名詞或形容詞，空格分隔，例如：深藍 修身 正式 西裝 商務 俐落}]
+[價格: {若有；否則省略此行}]
 
-function remember(userId: string, turn: ChatTurn) {
-  const h = histories.get(userId) ?? [];
-  h.push(turn);
-  while (h.length > MAX_TURNS) h.shift();
-  histories.set(userId, h);
-}
+### C（找完整穿搭）
+{使用者原始訊息（移除價格相關文字）}
+[限制條件: {所有限制條件，逗號分隔，例如：婚禮, 正式, 不搶新娘風采, 淡色系}]
+[價格: {若有；否則省略此行}]`;
 
-// ── LLM 呼叫：OpenRouter（OpenAI 相容格式） ──────────────────────────────────
+// ── LLM 呼叫：OpenRouter ─────────────────────────────────────────────────────
 async function callOpenRouter(
   systemPrompt: string,
-  messages: ChatTurn[],
-  maxTokens = 500
+  userMessage: string,
+  maxTokens = 400
 ): Promise<string | null> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -80,7 +70,10 @@ async function callOpenRouter(
       body: JSON.stringify({
         model: process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
         max_tokens: maxTokens,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
       }),
     });
     if (!res.ok) {
@@ -100,8 +93,8 @@ async function callOpenRouter(
 // ── LLM 呼叫：Anthropic ──────────────────────────────────────────────────────
 async function callAnthropic(
   systemPrompt: string,
-  messages: ChatTurn[],
-  maxTokens = 500
+  userMessage: string,
+  maxTokens = 400
 ): Promise<string | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
@@ -117,7 +110,7 @@ async function callAnthropic(
         model: process.env.CHAT_MODEL || "claude-haiku-4-5",
         max_tokens: maxTokens,
         system: systemPrompt,
-        messages,
+        messages: [{ role: "user", content: userMessage }],
       }),
     });
     if (!res.ok) {
@@ -135,8 +128,8 @@ async function callAnthropic(
 // ── LLM 呼叫：OpenAI ─────────────────────────────────────────────────────────
 async function callOpenAI(
   systemPrompt: string,
-  messages: ChatTurn[],
-  maxTokens = 500
+  userMessage: string,
+  maxTokens = 400
 ): Promise<string | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -150,7 +143,10 @@ async function callOpenAI(
       body: JSON.stringify({
         model: process.env.CHAT_MODEL || "gpt-4o-mini",
         max_tokens: maxTokens,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
       }),
     });
     if (!res.ok) {
@@ -167,55 +163,22 @@ async function callOpenAI(
   }
 }
 
-// 統一入口：根據 provider 決定呼叫哪家
+// 統一入口
 async function callLLM(
   provider: string,
   systemPrompt: string,
-  messages: ChatTurn[],
-  maxTokens = 500
+  userMessage: string,
+  maxTokens = 400
 ): Promise<string | null> {
-  if (provider === "openrouter") return callOpenRouter(systemPrompt, messages, maxTokens);
-  if (provider === "anthropic") return callAnthropic(systemPrompt, messages, maxTokens);
-  if (provider === "openai") return callOpenAI(systemPrompt, messages, maxTokens);
+  if (provider === "openrouter") return callOpenRouter(systemPrompt, userMessage, maxTokens);
+  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens);
+  if (provider === "openai") return callOpenAI(systemPrompt, userMessage, maxTokens);
   return null;
-}
-
-// ── Step 1：語意分析 ──────────────────────────────────────────────────────────
-async function analyzeIntent(
-  provider: string,
-  text: string
-): Promise<string | null> {
-  const result = await callLLM(
-    provider,
-    ANALYSIS_SYSTEM_PROMPT,
-    [{ role: "user", content: text }],
-    120 // 分析只需要短輸出
-  );
-  if (result) {
-    console.log(`[chat] 語意分析結果: ${result}`);
-  }
-  return result;
-}
-
-// ── Step 2：把分析結果附到使用者訊息後方 ────────────────────────────────────
-function enrichUserMessage(originalText: string, analysis: string | null, nonIgUrls?: string[]): string {
-  const parts: string[] = [originalText];
-
-  if (analysis && analysis !== "[閒聊]" && analysis !== "[使用說明]") {
-    parts.push(`\n[需求分析：${analysis.replace(/^\[.*?\]\s*/, "")}]`);
-  }
-
-  if (nonIgUrls && nonIgUrls.length > 0) {
-    parts.push(`\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`);
-  }
-
-  return parts.join("");
 }
 
 // ── Fallback：關鍵字規則（無金鑰或 LLM 全掛時用） ───────────────────────────
 function chatWithRules(text: string): string {
   const t = text.trim().toLowerCase();
-
   if (/怎麼用|怎么用|幫助|help|說明/.test(t)) {
     return "使用方式：\n1️⃣ 收藏穿搭 → 把 Instagram 貼文/Reels 連結傳過來\n2️⃣ 穿搭建議 → 用文字描述場合、風格、預算，例如「秋天約會穿搭，預算 2000」\n3️⃣ 查看收藏 → 打「收藏夾」或到網頁瀏覽 ✨";
   }
@@ -232,6 +195,14 @@ function chatWithRules(text: string): string {
   return "我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
 }
 
+// ── 組裝送給 LLM 的 user message（附上非 IG URL 上下文） ─────────────────────
+function buildUserMessage(text: string, nonIgUrls?: string[]): string {
+  if (nonIgUrls && nonIgUrls.length > 0) {
+    return `${text}\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`;
+  }
+  return text;
+}
+
 // ── 對外主函式 ────────────────────────────────────────────────────────────────
 export async function generateChatReply(
   userId: string | null,
@@ -239,31 +210,41 @@ export async function generateChatReply(
   nonIgUrls?: string[]
 ): Promise<string> {
   const provider = (process.env.CHAT_PROVIDER || "rules").toLowerCase();
-  const uid = userId ?? "anonymous";
+  const model = process.env.CHAT_MODEL ||
+    (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
+     provider === "anthropic"  ? "claude-haiku-4-5" :
+     provider === "openai"     ? "gpt-4o-mini" : "-");
+  const debug = process.env.CHAT_DEBUG === "true";
 
-  // rules 模式：直接走關鍵字，不呼叫任何 LLM
+  // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
-    return chatWithRules(text);
+    const reply = chatWithRules(text);
+    if (debug) {
+      return `[DEBUG] provider=rules\n────────────\n${reply}`;
+    }
+    return reply;
   }
 
-  // ── Step 1：語意分析 ─────────────────────────────────────────────────────
-  const analysis = await analyzeIntent(provider, text);
+  // ── LLM 模式 ────────────────────────────────────────────────────────────────
+  const userMessage = buildUserMessage(text, nonIgUrls);
+  console.log(`[chat] 送出分析，provider=${provider} model=${model}`);
+  console.log(`[chat] userMessage: ${userMessage.slice(0, 200)}`);
 
-  // ── Step 2：組裝 enriched 訊息 ──────────────────────────────────────────
-  const enrichedText = enrichUserMessage(text, analysis, nonIgUrls);
-  console.log(`[chat] Enriched message: ${enrichedText.slice(0, 200)}`);
+  const result = await callLLM(provider, CLASSIFIER_SYSTEM_PROMPT, userMessage, 400);
 
-  // ── Step 3：存進記憶，呼叫主 LLM ────────────────────────────────────────
-  remember(uid, { role: "user", content: enrichedText });
-  const history = histories.get(uid) ?? [{ role: "user" as const, content: enrichedText }];
-
-  const answer = await callLLM(provider, STYLIST_SYSTEM_PROMPT, history, 500);
-
-  if (!answer) {
+  if (!result) {
     console.warn("[chat] LLM 無回應，降級到 rules");
-    return chatWithRules(text);
+    const fallback = chatWithRules(text);
+    if (debug) {
+      return `[DEBUG] provider=${provider} model=${model}\n[ERROR] LLM 無回應，已降級\n────────────\n${fallback}`;
+    }
+    return fallback;
   }
 
-  remember(uid, { role: "assistant", content: answer });
-  return answer;
+  console.log(`[chat] LLM 分類結果: ${result.slice(0, 300)}`);
+
+  if (debug) {
+    return `[DEBUG] provider=${provider}\nmodel=${model}\n────────────\n${result}`;
+  }
+  return result;
 }
