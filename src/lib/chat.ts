@@ -1,12 +1,19 @@
 // 打字對話的核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
-//   - "anthropic" : Claude API（需 ANTHROPIC_API_KEY）
-//   - "openai"    : OpenAI API（需 OPENAI_API_KEY）
-//   - "rules"     : 純關鍵字規則（不用金鑰，保底 fallback）
+//   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY，用 CHAT_MODEL 指定模型）
+//   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY）
+//   - "openai"     : OpenAI API（需 OPENAI_API_KEY）
+//   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
+//
+// OpenRouter 推薦模型範例（設在 CHAT_MODEL）：
+//   google/gemini-flash-1.5          ← 快又便宜，適合 Step 1 分析
+//   anthropic/claude-haiku-4-5
+//   openai/gpt-4o-mini
+//   meta-llama/llama-3.1-8b-instruct ← 免費 tier 可用
 //
 // 核心流程（LLM 模式）：
-//   Step 1: analyzeIntent()  — 用 LLM 分析使用者語意，抽出場合/風格/預算/隱含條件
+//   Step 1: analyzeIntent()     — 用 LLM 分析使用者語意，抽出場合/風格/預算/隱含條件
 //   Step 2: enrichUserMessage() — 把分析結果附在原始訊息後面
 //   Step 3: 帶著 enriched message + 對話歷史，呼叫主 LLM 產生回覆
 
@@ -47,6 +54,46 @@ function remember(userId: string, turn: ChatTurn) {
   h.push(turn);
   while (h.length > MAX_TURNS) h.shift();
   histories.set(userId, h);
+}
+
+// ── LLM 呼叫：OpenRouter（OpenAI 相容格式） ──────────────────────────────────
+async function callOpenRouter(
+  systemPrompt: string,
+  messages: ChatTurn[],
+  maxTokens = 500
+): Promise<string | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    console.error("[chat] CHAT_PROVIDER=openrouter 但沒設 OPENROUTER_API_KEY");
+    return null;
+  }
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.SITE_URL ?? "https://wowstylist.app",
+        "X-Title": "WowStylist",
+      },
+      body: JSON.stringify({
+        model: process.env.CHAT_MODEL || "google/gemini-flash-1.5",
+        max_tokens: maxTokens,
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
+      }),
+    });
+    if (!res.ok) {
+      console.error(`[chat] OpenRouter HTTP ${res.status}:`, await res.text());
+      return null;
+    }
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return data.choices?.[0]?.message?.content ?? null;
+  } catch (e) {
+    console.error("[chat] OpenRouter 錯誤:", e);
+    return null;
+  }
 }
 
 // ── LLM 呼叫：Anthropic ──────────────────────────────────────────────────────
@@ -126,16 +173,13 @@ async function callLLM(
   messages: ChatTurn[],
   maxTokens = 500
 ): Promise<string | null> {
+  if (provider === "openrouter") return callOpenRouter(systemPrompt, messages, maxTokens);
   if (provider === "anthropic") return callAnthropic(systemPrompt, messages, maxTokens);
   if (provider === "openai") return callOpenAI(systemPrompt, messages, maxTokens);
   return null;
 }
 
 // ── Step 1：語意分析 ──────────────────────────────────────────────────────────
-// 用輕量 LLM 呼叫（max_tokens: 120）分析使用者訊息，
-// 回傳一行結構化摘要，例如：
-//   「[找整套穿搭] 場合=婚禮｜風格=正式｜隱含=不能搶新娘風采」
-//   「[閒聊]」
 async function analyzeIntent(
   provider: string,
   text: string
@@ -215,7 +259,6 @@ export async function generateChatReply(
   const answer = await callLLM(provider, STYLIST_SYSTEM_PROMPT, history, 500);
 
   if (!answer) {
-    // LLM 失敗 → 規則 fallback，至少不已讀不回
     console.warn("[chat] LLM 無回應，降級到 rules");
     return chatWithRules(text);
   }
