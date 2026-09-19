@@ -58,9 +58,18 @@ async function callOpenRouter(
     console.error("[chat] CHAT_PROVIDER=openrouter 但沒設 OPENROUTER_API_KEY");
     return null;
   }
+
+  const model = process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
+  const timeoutMs = 8000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+
   try {
+    console.log(`[chat] OpenRouter 送出請求 model=${model} timeout=${timeoutMs}ms`);
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
@@ -68,7 +77,7 @@ async function callOpenRouter(
         "X-Title": "WowStylist",
       },
       body: JSON.stringify({
-        model: process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
+        model,
         max_tokens: maxTokens,
         messages: [
           { role: "system", content: systemPrompt },
@@ -76,16 +85,59 @@ async function callOpenRouter(
         ],
       }),
     });
+    clearTimeout(timer);
+    const elapsed = Date.now() - startedAt;
+
     if (!res.ok) {
-      console.error(`[chat] OpenRouter HTTP ${res.status}:`, await res.text());
+      const body = await res.text();
+      console.error(
+        `[chat] OpenRouter HTTP ${res.status} (${elapsed}ms) model=${model}\n` +
+        `  response body: ${body.slice(0, 500)}`
+      );
       return null;
     }
+
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
+      error?: { message?: string; code?: number };
     };
-    return data.choices?.[0]?.message?.content ?? null;
-  } catch (e) {
-    console.error("[chat] OpenRouter 錯誤:", e);
+
+    // OpenRouter 有時 HTTP 200 但 body 裡帶 error 欄位
+    if (data.error) {
+      console.error(
+        `[chat] OpenRouter 200 但帶 error (${elapsed}ms) model=${model}\n` +
+        `  code=${data.error.code} message=${data.error.message}`
+      );
+      return null;
+    }
+
+    const content = data.choices?.[0]?.message?.content ?? null;
+    if (!content) {
+      console.error(
+        `[chat] OpenRouter 200 但 choices 空 (${elapsed}ms) model=${model}\n` +
+        `  raw: ${JSON.stringify(data).slice(0, 300)}`
+      );
+      return null;
+    }
+
+    console.log(`[chat] OpenRouter 回應成功 (${elapsed}ms)`);
+    return content;
+
+  } catch (e: unknown) {
+    clearTimeout(timer);
+    const elapsed = Date.now() - startedAt;
+
+    if (e instanceof Error && e.name === "AbortError") {
+      console.error(
+        `[chat] OpenRouter 超時 (>${elapsed}ms) model=${model} — ` +
+        `考慮換小模型或設 CHAT_MODEL=meta-llama/llama-3.1-8b-instruct:free`
+      );
+    } else if (e instanceof TypeError) {
+      // 通常是網路層錯誤（DNS、connection refused 等）
+      console.error(`[chat] OpenRouter 網路錯誤 (${elapsed}ms) model=${model}:`, e.message);
+    } else {
+      console.error(`[chat] OpenRouter 未知錯誤 (${elapsed}ms) model=${model}:`, e);
+    }
     return null;
   }
 }
@@ -219,8 +271,7 @@ export async function generateChatReply(
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
-  // const debug = process.env.CHAT_DEBUG === "TRUE";
-  const debug = (1===1);
+  const debug = process.env.CHAT_DEBUG === "true";
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
