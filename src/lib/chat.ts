@@ -98,7 +98,10 @@ async function callOpenRouter(
     }
 
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: {
+        finish_reason?: string;
+        message?: { content?: string | { text?: string }[] };
+      }[];
       error?: { message?: string; code?: number };
     };
 
@@ -111,8 +114,19 @@ async function callOpenRouter(
       return null;
     }
 
-    const content = data.choices?.[0]?.message?.content ?? null;
-    if (!content) {
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
+
+    // finish_reason=length 代表輸出被截斷，內容不完整
+    if (choice?.finish_reason === "length") {
+      console.error(
+        `[chat] OpenRouter 輸出被截斷 finish_reason=length (${elapsed}ms) model=${model}\n` +
+        `  考慮調高 maxTokens 或換小模型`
+      );
+      return null;
+    }
+
+    if (!msg) {
       console.error(
         `[chat] OpenRouter 200 但 choices 空 (${elapsed}ms) model=${model}\n` +
         `  raw: ${JSON.stringify(data).slice(0, 300)}`
@@ -120,7 +134,21 @@ async function callOpenRouter(
       return null;
     }
 
-    console.log(`[chat] OpenRouter 回應成功 (${elapsed}ms)`);
+    // Nemotron 等模型有時把 content 回成 array（參考 Kai 的 extract.mjs）
+    const rawContent = msg.content;
+    const content = Array.isArray(rawContent)
+      ? rawContent.map((c) => (typeof c === "object" && c !== null ? (c.text ?? "") : String(c))).join("")
+      : rawContent ?? null;
+
+    if (!content) {
+      console.error(
+        `[chat] OpenRouter content 空或格式異常 (${elapsed}ms) model=${model}\n` +
+        `  finish_reason=${choice?.finish_reason} raw msg: ${JSON.stringify(msg).slice(0, 300)}`
+      );
+      return null;
+    }
+
+    console.log(`[chat] OpenRouter 回應成功 (${elapsed}ms) finish_reason=${choice?.finish_reason}`);
     return content;
 
   } catch (e: unknown) {
@@ -271,8 +299,7 @@ export async function generateChatReply(
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
-  // const debug = process.env.CHAT_DEBUG === "true";
-  const debug = (1 === 1);
+  const debug = process.env.CHAT_DEBUG === "true";
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
