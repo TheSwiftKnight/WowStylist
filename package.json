@@ -11,6 +11,7 @@
     "pipeline:health": "curl -s http://127.0.0.1:8000/health",
     "db:doctor": "cd pipeline && ./py -m fashion_retrieval.doctor",
     "db:migrate": "cd pipeline && ./py -m fashion_retrieval.migrate",
+    "db:show": "cd pipeline && ./py -m fashion_retrieval.show",
     "ig": "cd pipeline && ./py -m fashion_retrieval.pipeline",
     "richmenu": "node scripts/richmenu.mjs",
     "kb:crawl": "node scripts/style-kb/crawl.mjs",

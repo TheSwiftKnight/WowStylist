@@ -67,6 +67,12 @@ npm run pipeline:health    # 應該回 "ok": true
 的話，`rm -rf pipeline/.venv` 再 `npm run pipeline:install` 重建。
 `py` 偵測到 venv 跑不動會直接告訴你這件事，不會讓你在半殘的環境裡除錯。
 
+```bash
+npm run db:show            # 看 RDS 裡實際有什麼（唯讀）
+npm run db:show -- --full  # 描述不截斷
+npm run db:show -- --id 42 # 某一列的全部欄位
+```
+
 `npm run db:doctor` 是卡住時的第一站 —— 它會一關一關告訴你哪裡不對、
 怎麼修，包括 RDS 連不上時是 Publicly accessible 還是 security group 的問題。
 
