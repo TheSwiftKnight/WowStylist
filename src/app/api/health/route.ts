@@ -121,8 +121,10 @@ async function checkDatabase(): Promise<Check> {
       ok: false,
       detail: String(err),
       hint:
-        "連不到 RDS。security group 有開放這台伺服器的 IP 嗎？" +
-        "Vercel 沒有固定 IP，只開 My IP 的話伺服器端會連不進來。",
+        "連不到 RDS。你自己的電腦連得上、但這台伺服器連不上，" +
+        "就是 security group 的 inbound 只開了你的 IP。" +
+        "Vercel 沒有固定 IP 範圍，要嘛開 0.0.0.0/0，" +
+        "要嘛不要從 Vercel 連（把 webhook 指回本機的 ngrok）。",
     };
   }
 }
@@ -153,6 +155,18 @@ async function checkPipeline(onVercel: boolean): Promise<Check> {
       signal: AbortSignal.timeout(8000),
       cache: "no-store",
     });
+
+    if (res.status === 404) {
+      return {
+        ok: false,
+        url,
+        detail: "HTTP 404 —— 這個網址有東西在回應，但它不是分析服務。",
+        hint:
+          "ngrok 八成指到 3000（Next.js）而不是 8000（FastAPI）。" +
+          "Next.js 沒有 /health 這條路由，所以回 404。" +
+          "正確做法：ngrok http 8000。",
+      };
+    }
 
     if (!res.ok) {
       return { ok: false, url, detail: `HTTP ${res.status}` };
@@ -197,6 +211,10 @@ export async function GET() {
       },
       checks,
     },
-    { status: problems.length === 0 ? 200 : 503 }
+    {
+      status: problems.length === 0 ? 200 : 503,
+      // 不標 charset 的話有些 viewer 會把中文當 latin-1 顯示成亂碼
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    }
   );
 }
