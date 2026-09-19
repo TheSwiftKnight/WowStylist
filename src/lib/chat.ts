@@ -47,16 +47,20 @@ const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根�
 [限制條件: {所有限制條件，逗號分隔，例如：婚禮, 正式, 不搶新娘風采, 淡色系}]
 [價格: {若有；否則省略此行}]`;
 
+// LLM 回傳結果，content=null 時 reason 說明失敗原因（會直接出現在 DEBUG LINE 訊息裡）
+type LLMResult = { content: string; reason: string } | { content: null; reason: string };
+
 // ── LLM 呼叫：OpenRouter ─────────────────────────────────────────────────────
 async function callOpenRouter(
   systemPrompt: string,
   userMessage: string,
   maxTokens = 400
-): Promise<string | null> {
+): Promise<LLMResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    console.error("[chat] CHAT_PROVIDER=openrouter 但沒設 OPENROUTER_API_KEY");
-    return null;
+    const reason = "NO_API_KEY: OPENROUTER_API_KEY 未設定";
+    console.error(`[chat] ${reason}`);
+    return { content: null, reason };
   }
 
   const model = process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
@@ -90,11 +94,9 @@ async function callOpenRouter(
 
     if (!res.ok) {
       const body = await res.text();
-      console.error(
-        `[chat] OpenRouter HTTP ${res.status} (${elapsed}ms) model=${model}\n` +
-        `  response body: ${body.slice(0, 500)}`
-      );
-      return null;
+      const reason = `HTTP_${res.status} (${elapsed}ms): ${body.slice(0, 300)}`;
+      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      return { content: null, reason };
     }
 
     const data = (await res.json()) as {
@@ -107,11 +109,9 @@ async function callOpenRouter(
 
     // OpenRouter 有時 HTTP 200 但 body 裡帶 error 欄位
     if (data.error) {
-      console.error(
-        `[chat] OpenRouter 200 但帶 error (${elapsed}ms) model=${model}\n` +
-        `  code=${data.error.code} message=${data.error.message}`
-      );
-      return null;
+      const reason = `API_ERROR code=${data.error.code}: ${data.error.message}`;
+      console.error(`[chat] OpenRouter ${reason} (${elapsed}ms) model=${model}`);
+      return { content: null, reason };
     }
 
     const choice = data.choices?.[0];
@@ -119,19 +119,16 @@ async function callOpenRouter(
 
     // finish_reason=length 代表輸出被截斷，內容不完整
     if (choice?.finish_reason === "length") {
-      console.error(
-        `[chat] OpenRouter 輸出被截斷 finish_reason=length (${elapsed}ms) model=${model}\n` +
-        `  考慮調高 maxTokens 或換小模型`
-      );
-      return null;
+      const reason = `TRUNCATED finish_reason=length (${elapsed}ms) — 考慮換小模型或降低 maxTokens`;
+      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      return { content: null, reason };
     }
 
     if (!msg) {
-      console.error(
-        `[chat] OpenRouter 200 但 choices 空 (${elapsed}ms) model=${model}\n` +
-        `  raw: ${JSON.stringify(data).slice(0, 300)}`
-      );
-      return null;
+      const raw = JSON.stringify(data).slice(0, 200);
+      const reason = `EMPTY_CHOICES (${elapsed}ms) raw=${raw}`;
+      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      return { content: null, reason };
     }
 
     // Nemotron 等模型有時把 content 回成 array（參考 Kai 的 extract.mjs）
@@ -141,32 +138,29 @@ async function callOpenRouter(
       : rawContent ?? null;
 
     if (!content) {
-      console.error(
-        `[chat] OpenRouter content 空或格式異常 (${elapsed}ms) model=${model}\n` +
-        `  finish_reason=${choice?.finish_reason} raw msg: ${JSON.stringify(msg).slice(0, 300)}`
-      );
-      return null;
+      const raw = JSON.stringify(msg).slice(0, 200);
+      const reason = `EMPTY_CONTENT (${elapsed}ms) finish=${choice?.finish_reason} msg=${raw}`;
+      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      return { content: null, reason };
     }
 
     console.log(`[chat] OpenRouter 回應成功 (${elapsed}ms) finish_reason=${choice?.finish_reason}`);
-    return content;
+    return { content, reason: "ok" };
 
   } catch (e: unknown) {
     clearTimeout(timer);
     const elapsed = Date.now() - startedAt;
+    let reason: string;
 
     if (e instanceof Error && e.name === "AbortError") {
-      console.error(
-        `[chat] OpenRouter 超時 (>${elapsed}ms) model=${model} — ` +
-        `考慮換小模型或設 CHAT_MODEL=meta-llama/llama-3.1-8b-instruct:free`
-      );
+      reason = `TIMEOUT >${elapsed}ms — 考慮換小模型：CHAT_MODEL=meta-llama/llama-3.1-8b-instruct:free`;
     } else if (e instanceof TypeError) {
-      // 通常是網路層錯誤（DNS、connection refused 等）
-      console.error(`[chat] OpenRouter 網路錯誤 (${elapsed}ms) model=${model}:`, e.message);
+      reason = `NETWORK_ERROR (${elapsed}ms): ${e.message}`;
     } else {
-      console.error(`[chat] OpenRouter 未知錯誤 (${elapsed}ms) model=${model}:`, e);
+      reason = `UNKNOWN_ERROR (${elapsed}ms): ${String(e)}`;
     }
-    return null;
+    console.error(`[chat] OpenRouter ${reason} model=${model}`);
+    return { content: null, reason };
   }
 }
 
@@ -243,17 +237,23 @@ async function callOpenAI(
   }
 }
 
-// 統一入口
+// 統一入口（OpenRouter 回傳 LLMResult；其他 provider 暫時包裝成同格式）
 async function callLLM(
   provider: string,
   systemPrompt: string,
   userMessage: string,
   maxTokens = 400
-): Promise<string | null> {
+): Promise<LLMResult> {
   if (provider === "openrouter") return callOpenRouter(systemPrompt, userMessage, maxTokens);
-  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens);
-  if (provider === "openai") return callOpenAI(systemPrompt, userMessage, maxTokens);
-  return null;
+  if (provider === "anthropic") {
+    const content = await callAnthropic(systemPrompt, userMessage, maxTokens);
+    return content ? { content, reason: "ok" } : { content: null, reason: "ANTHROPIC_NO_RESPONSE" };
+  }
+  if (provider === "openai") {
+    const content = await callOpenAI(systemPrompt, userMessage, maxTokens);
+    return content ? { content, reason: "ok" } : { content: null, reason: "OPENAI_NO_RESPONSE" };
+  }
+  return { content: null, reason: `UNKNOWN_PROVIDER: ${provider}` };
 }
 
 // ── Fallback：關鍵字規則（無金鑰或 LLM 全掛時用） ───────────────────────────
@@ -299,8 +299,7 @@ export async function generateChatReply(
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
-  // const debug = process.env.CHAT_DEBUG === "true";
-  const debug = (1 === 1);
+  const debug = process.env.CHAT_DEBUG === "true";
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
@@ -316,13 +315,13 @@ export async function generateChatReply(
   console.log(`[chat] 送出分析，provider=${provider} model=${model}`);
   console.log(`[chat] userMessage: ${userMessage.slice(0, 200)}`);
 
-  const result = await callLLM(provider, CLASSIFIER_SYSTEM_PROMPT, userMessage, 400);
+  const { content: result, reason } = await callLLM(provider, CLASSIFIER_SYSTEM_PROMPT, userMessage, 400);
 
   if (!result) {
-    console.warn("[chat] LLM 無回應，降級到 rules");
+    console.warn(`[chat] LLM 無回應（${reason}），降級到 rules`);
     const fallback = chatWithRules(text);
     if (debug) {
-      return `[DEBUG] provider=${provider} model=${model}\n[ERROR] LLM 無回應，已降級\n────────────\n${fallback}`;
+      return `[DEBUG] provider=${provider} model=${model}\n[ERROR] ${reason}\n────────────\n${fallback}`;
     }
     return fallback;
   }
