@@ -1,1 +1,29 @@
 {"style":"old_money","url":"https://www.harpersbazaar.com/uk/fashion/shopping/a65931591/expensive-looking-outfits-for-autumn/","stage":"extract","reason":"回應沒有 message","at":"2026-09-19"}
+{"style":"indie_sleaze","url":"https://www.whowhatwear.com/fashion/trends/indie-sleaze-trend-2026","stage":"validate","reason":"bottom_description_too_short","at":"2026-09-19"}
+{"style":"indie_sleaze","url":"https://www.whowhatwear.com/fashion/trends/indie-sleaze-trend-2026","stage":"validate","reason":"bottom_description_too_short","at":"2026-09-19"}
+{"style":"indie_sleaze","url":"https://www.whowhatwear.com/fashion/trends/indie-sleaze-trend-2026","stage":"validate","reason":"bottom_description_too_short","at":"2026-09-19"}
+{"style":"mermaidcore","url":"https://www.whowhatwear.com/fashion/trends/mermaid-trend-2026","stage":"extract","reason":"output_truncated（finish_reason=length，調高 EXTRACT.maxTokens 或調低 outfitsPerStyle） → /Users/kaitsao/Projects/WowStylist/data/style-kb/debug/openrouter-mermaidcore-truncated-6033c334.json","at":"2026-09-19"}
+{"style":"barbiecore","url":"https://www.whowhatwear.com/fashion/dresses/babydoll-dress-trend-summer-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"barbiecore","url":"https://www.whowhatwear.com/fashion/dresses/babydoll-dress-trend-summer-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"barbiecore","url":"https://www.whowhatwear.com/fashion/dresses/babydoll-dress-trend-summer-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"barbiecore","url":"https://www.whowhatwear.com/fashion/dresses/babydoll-dress-trend-summer-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"androgynous","url":"https://www.whowhatwear.com/fashion/outfit-ideas/elevated-transitional-outfits-2026","stage":"validate","reason":"low_conf_0.2","at":"2026-09-19"}
+{"style":"androgynous","url":"https://www.whowhatwear.com/fashion/outfit-ideas/elevated-transitional-outfits-2026","stage":"validate","reason":"low_conf_0.2","at":"2026-09-19"}
+{"style":"neo_chinese","url":"https://www.vogue.com/article/what-is-chinese-style-today","stage":"extract","reason":"output_truncated（finish_reason=length，調高 EXTRACT.maxTokens 或調低 outfitsPerStyle） → /Users/kaitsao/Projects/WowStylist/data/style-kb/debug/openrouter-neo_chinese-truncated-3c41fe15.json","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/french-girl-summer-outfits-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/french-girl-summer-outfits-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/french-girl-summer-outfits-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"acubi","url":"https://www.gq.com/story/how-we-wear-it-acne-studios","stage":"extract","reason":"output_truncated（finish_reason=length，調高 EXTRACT.maxTokens 或調低 outfitsPerStyle） → /Users/kaitsao/Projects/WowStylist/data/style-kb/debug/openrouter-acubi-truncated-6a32b794.json","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/best-outfit-formula-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/best-outfit-formula-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/best-outfit-formula-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/best-outfit-formula-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/outfit-ideas/best-outfit-formula-2026","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"acubi","url":"https://www.marieclaire.com/fashion/capri-pants-outfits-julia-gall/","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"acubi","url":"https://www.marieclaire.com/fashion/capri-pants-outfits-julia-gall/","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"acubi","url":"https://www.marieclaire.com/fashion/capri-pants-outfits-julia-gall/","stage":"validate","reason":"style_not_present","at":"2026-09-19"}
+{"style":"soft_girl","url":"https://www.whowhatwear.com/fashion/how-romantic-is-your-wardrobe","stage":"extract","reason":"output_truncated（finish_reason=length，調高 EXTRACT.maxTokens 或調低 outfitsPerStyle） → /Users/kaitsao/Projects/WowStylist/data/style-kb/debug/openrouter-soft_girl-truncated-8c16efd6.json","at":"2026-09-19"}
+{"style":"rich_girl","url":"https://www.styletc.com/article/497105","stage":"extract","reason":"terminated","at":"2026-09-19"}
+{"style":"maillard_style","url":"https://www.vogue.com.tw/article/bohemian-style-blouse-with-jeans","stage":"extract","reason":"terminated","at":"2026-09-19"}
+{"style":"forest_girl","url":"https://www.vogue.com.tw/article/how-to-wear-corduroy-pants-sweaters-2025-2026","stage":"extract","reason":"terminated","at":"2026-09-19"}
+{"style":"maillard_style","url":"https://www.vogue.com.tw/article/flared-jeans-with-cool-blouses-and-espadrilles","stage":"validate","reason":"low_conf_0.2","at":"2026-09-19"}

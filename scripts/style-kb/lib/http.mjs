@@ -109,17 +109,25 @@ export async function getHtml(url, { force = false } = {}) {
   return { skipped: `fetch_failed:${lastErr?.message || "unknown"}` };
 }
 
-export async function postJson(url, body, headers = {}, { retries = 4 } = {}) {
+export async function postJson(url, body, headers = {}, { retries = 4, timeoutMs = 120000, retryOnTimeout = false } = {}) {
   let lastErr;
   for (let i = 0; i <= retries; i++) {
     const res = await rawFetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
-      timeoutMs: 120000,
+      timeoutMs,
     }).catch((e) => { lastErr = e; return null; });
 
-    if (!res) { await sleep(2000 * (i + 1)); continue; }
+    if (!res) {
+      // 逾時或連線中斷。重打一次 = 再等一整輪 timeout，而且配額照算 —— 預設不重試。
+      if (!retryOnTimeout || i >= 1) {
+        lastErr = new Error(`請求中斷：${Math.round(timeoutMs / 1000)}s 內沒回應（${lastErr?.message || "aborted"}）`);
+        break;
+      }
+      await sleep(2000);
+      continue;
+    }
     const text = await res.text();
 
     // 429 / 5xx 退避重試。免費層（OpenRouter 200 req/day）很容易撞到。
