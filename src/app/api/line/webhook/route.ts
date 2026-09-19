@@ -1,17 +1,21 @@
 import crypto from "node:crypto";
 import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
-import { saveLinkBasic, enrichLink } from "@/lib/ingest";
+import { requestIngest } from "@/lib/pipeline";
+import { createFailedJob } from "@/lib/jobs";
 import { generateChatReply } from "@/lib/chat";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
-// 流程：驗證簽章 → 解析事件 → 抓出 IG 連結存 DB → 回覆使用者
-//       → 回應送出「之後」才去抓 IG 的 caption/username（after()）。
 //
-// 為什麼用 after()：抓 IG 一個連結要兩次 HTTP 往返，放在回應之前會把
-// function 的執行時間拉長，LINE 等不到 200 會重送，serverless 上也容易吃到
-// 逾時上限。after() 讓我們先把 200 丟回去，剩下的在背景跑完。
+// 流程：驗證簽章 → 解析事件 → 抓出 IG 連結 → 回覆使用者
+//       → 回應送出「之後」才把連結送進分析 pipeline（after()）。
+//
+// pipeline 那端（./pipeline 的 FastAPI）也是立刻回 job id 就結束，
+// Apify → Claude Vision → BGE-M3 → 寫 RDS 全部在它自己的背景跑。
+// 所以這裡是「兩層非同步」：
+//   LINE 秒收到回覆 → Next.js 背景送件 → Python 背景分析
+// 使用者在網頁上看到的進度來自 ingest_jobs 表（GET /api/jobs）。
 
 export const dynamic = "force-dynamic";
 
@@ -122,34 +126,39 @@ export async function POST(req: Request) {
     const senderId = event.source?.userId ?? null;
     const senderName = senderId ? await getSenderName(senderId) : null;
 
-    // 先快速存檔 + 回覆，IG 內容（圖片/文字）之後再慢慢抓
-    const savedRows = [];
-    for (const link of links) {
-      savedRows.push(await saveLinkBasic(link, { sourceText: text, senderId, senderName }));
-    }
-    console.log(`[webhook] 已存入 ${savedRows.length} 筆`);
-
+    // 先回覆，再送件。LINE 的 replyToken 只有幾秒可以用，
+    // 而 requestIngest 要跨機器打 FastAPI，不能擋在回覆前面。
     if (event.replyToken) {
       await replyText(
         event.replyToken,
-        `收到！已收藏 ${savedRows.length} 個連結 ✅`
+        `收到！正在分析 ${links.length} 則貼文的穿搭，完成後就會出現在收藏夾 ✅`
       );
     }
 
-    // 回應送出之後才抓 IG 內容，使用者和 LINE 都不用等
-    const pending = savedRows.filter((row) => row.fetchStatus !== "ok");
-    if (pending.length > 0) {
-      after(async () => {
-        for (const row of pending) {
-          try {
-            await enrichLink(row);
-          } catch (e) {
-            console.error(`[webhook] 抓取 ${row.shortcode} 內容時出錯:`, e);
-          }
+    after(async () => {
+      for (const link of links) {
+        try {
+          const ticket = await requestIngest(link.url, {
+            sourceText: text,
+            senderId,
+            senderName,
+          });
+          console.log(
+            `[webhook] ${link.shortcode} 已送進 pipeline（job ${ticket.jobId}）`
+          );
+        } catch (e) {
+          console.error(`[webhook] ${link.shortcode} 送件失敗:`, e);
+
+          // 送不出去也要留下痕跡，不然前端完全不知道發生什麼事
+          await createFailedJob(link.url, String(e), {
+            shortcode: link.shortcode,
+            sourceText: text,
+            senderId,
+            senderName,
+          });
         }
-        console.log(`[webhook] 背景補抓完成 ${pending.length} 筆`);
-      });
-    }
+      }
+    });
   }
 
   // LINE 只要求回 200，內容不重要；出錯也盡量回 200 避免 LINE 重送轟炸

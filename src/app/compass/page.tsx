@@ -1,5 +1,6 @@
 import Link from "next/link";
 import TagCloud from "./TagCloud";
+import SyncTagsButton from "../components/SyncTagsButton";
 import { listTags } from "@/lib/tags";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,7 @@ export default async function CompassPage() {
 
         <footer className="compass__foot">
           <span>字級大小＝這個標籤在你收藏裡的比重</span>
+          <SyncTagsButton />
           {isMock ? (
             <span className="mock-flag">示範資料 · 資料庫連不上，改不動</span>
           ) : (
