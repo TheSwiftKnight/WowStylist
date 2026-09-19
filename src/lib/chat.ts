@@ -7,10 +7,11 @@
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
 // OpenRouter 推薦模型範例（設在 CHAT_MODEL）：
-//   google/gemini-flash-1.5          ← 快又便宜，適合 Step 1 分析
+//   nvidia/nemotron-3-ultra-550b-a55b:free ← 預設，免費
+//   google/gemini-flash-1.5
 //   anthropic/claude-haiku-4-5
 //   openai/gpt-4o-mini
-//   meta-llama/llama-3.1-8b-instruct ← 免費 tier 可用
+//   meta-llama/llama-3.1-8b-instruct
 //
 // 核心流程（LLM 模式）：
 //   Step 1: analyzeIntent()     — 用 LLM 分析使用者語意，抽出場合/風格/預算/隱含條件
@@ -77,7 +78,7 @@ async function callOpenRouter(
         "X-Title": "WowStylist",
       },
       body: JSON.stringify({
-        model: process.env.CHAT_MODEL || "google/gemini-flash-1.5",
+        model: process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
         max_tokens: maxTokens,
         messages: [{ role: "system", content: systemPrompt }, ...messages],
       }),
