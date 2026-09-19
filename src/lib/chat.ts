@@ -209,7 +209,12 @@ export async function generateChatReply(
   text: string,
   nonIgUrls?: string[]
 ): Promise<string> {
-  const provider = (process.env.CHAT_PROVIDER || "rules").toLowerCase();
+  // 自動偵測 provider：優先用明確設定，其次看哪個 API key 有值
+  const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
+  const provider = explicit ||
+    (process.env.OPENROUTER_API_KEY ? "openrouter" :
+     process.env.ANTHROPIC_API_KEY  ? "anthropic"  :
+     process.env.OPENAI_API_KEY     ? "openai"     : "rules");
   const model = process.env.CHAT_MODEL ||
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
