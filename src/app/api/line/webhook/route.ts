@@ -5,7 +5,7 @@ import { extractAnyUrls } from "@/lib/url";
 import { requestIngest, warmUp } from "@/lib/pipeline";
 import { createFailedJob } from "@/lib/jobs";
 import { generateChatReply, endFashionSession, updateUserPreferenceFile, writeOutfitAdvice } from "@/lib/chat";
-import { buildOutfitCarousel, siteUrl, type FlexMessage } from "@/lib/flex";
+import { buildOutfitCarousel, siteUrl } from "@/lib/flex";
 import { likeProduct } from "@/lib/likes";
 
 // LINE Messaging API webhook 接收端。
@@ -78,12 +78,15 @@ async function getSenderName(userId: string): Promise<string | null> {
   }
 }
 
-// Reply API：用 replyToken，只能用一次，第一則「已收到」用這個
-async function replyText(replyToken: string, text: string): Promise<void> {
+// Reply API：用 replyToken，只能用一次，但**免費且不限量**。
+// Push API 在 LINE 免費方案有每月上限（用完之後 push 會直接失敗），
+// 所以主要的回覆一律走 Reply，Push 只當 replyToken 失效時的備援。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function replyRaw(replyToken: string, messages: any[]): Promise<boolean> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token) {
     console.error("[webhook] 沒有 LINE_CHANNEL_ACCESS_TOKEN，無法回覆");
-    return;
+    return false;
   }
   try {
     const res = await fetch("https://api.line.me/v2/bot/message/reply", {
@@ -92,32 +95,60 @@ async function replyText(replyToken: string, text: string): Promise<void> {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        replyToken,
-        messages: [{ type: "text", text }],
-      }),
+      body: JSON.stringify({ replyToken, messages }),
     });
     if (!res.ok) {
-      console.error(
-        `[webhook] LINE 回覆失敗 HTTP ${res.status}:`,
-        await res.text()
-      );
-    } else {
-      console.log("[webhook] 已回覆使用者 ✅");
+      // token 錯誤/過期、replyToken 用過或逾時，都會在這裡看到原因
+      console.error(`[webhook] LINE reply 失敗 HTTP ${res.status}:`, await res.text());
+      return false;
     }
+    console.log(`[webhook] 已回覆使用者 ✅（${messages.length} 則）`);
+    return true;
   } catch (e) {
     console.error("[webhook] LINE reply failed:", e);
+    return false;
   }
 }
 
-// Push API：用 userId，可以任何時候傳，用於背景進度推送
-// 注意：LINE 免費方案每月 500 則，使用時請注意用量
+async function replyText(replyToken: string, text: string): Promise<void> {
+  await replyRaw(replyToken, [{ type: "text", text }]);
+}
+
+/**
+ * 顯示「輸入中」動畫。
+ * 不佔 push 配額、也不會用掉 replyToken，適合拿來取代「⏳ 收到」那則訊息。
+ * 只在一對一聊天有效；失敗了也無所謂。
+ */
+async function startLoading(userId: string, seconds = 60): Promise<void> {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token) return;
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/chat/loading/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      // loadingSeconds 必須是 5 的倍數，最多 60
+      body: JSON.stringify({ chatId: userId, loadingSeconds: Math.min(60, Math.round(seconds / 5) * 5) }),
+    });
+    if (!res.ok) {
+      console.warn(`[webhook] loading 動畫失敗 HTTP ${res.status}:`, (await res.text()).slice(0, 200));
+    }
+  } catch (e) {
+    console.warn("[webhook] loading 動畫失敗:", e);
+  }
+}
+
+// Push API：用 userId，可以任何時候傳。
+// ⚠️ LINE 免費方案每月有推播則數上限（依方案與地區而定，到官方帳號管理後台看），
+// 而且使用者端完全沒有任何提示 —— 「只收到第一則、後面都沒了」通常就是這個原因。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function pushRaw(userId: string, messages: any[]): Promise<void> {
+async function pushRaw(userId: string, messages: any[]): Promise<boolean> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token) {
     console.error("[webhook] 沒有 LINE_CHANNEL_ACCESS_TOKEN，無法 push");
-    return;
+    return false;
   }
   try {
     const res = await fetch("https://api.line.me/v2/bot/message/push", {
@@ -129,15 +160,18 @@ async function pushRaw(userId: string, messages: any[]): Promise<void> {
       body: JSON.stringify({ to: userId, messages }),
     });
     if (!res.ok) {
+      const body = await res.text();
       console.error(
-        `[webhook] LINE push 失敗 HTTP ${res.status}:`,
-        await res.text()
+        `[webhook] LINE push 失敗 HTTP ${res.status}: ${body.slice(0, 300)}` +
+        (res.status === 429 ? "　← 很可能是每月 push 配額用完了" : "")
       );
-    } else {
-      console.log(`[webhook] push 成功 userId=${userId.slice(0, 8)}...`);
+      return false;
     }
+    console.log(`[webhook] push 成功 userId=${userId.slice(0, 8)}...（${messages.length} 則）`);
+    return true;
   } catch (e) {
     console.error("[webhook] LINE push failed:", e);
+    return false;
   }
 }
 
@@ -145,16 +179,22 @@ async function pushMessage(userId: string, text: string): Promise<void> {
   await pushRaw(userId, [{ type: "text", text }]);
 }
 
-/** 送 Flex carousel。LINE 一次最多 5 則訊息。 */
-async function pushFlex(
-  userId: string,
-  flex: FlexMessage,
-  leadingText?: string
+/**
+ * 先用 Reply（免費），失敗了才改用 Push（吃配額）。
+ * LINE 一次最多 5 則訊息。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function deliver(
+  replyToken: string | undefined,
+  userId: string | null,
+  messages: any[]
 ): Promise<void> {
-  const messages = leadingText
-    ? [{ type: "text", text: leadingText }, flex]
-    : [flex];
-  await pushRaw(userId, messages);
+  const slice = messages.slice(0, 5);
+  if (replyToken && (await replyRaw(replyToken, slice))) return;
+  if (userId) {
+    console.warn("[webhook] reply 沒送成功，改用 push（會吃配額）");
+    await pushRaw(userId, slice);
+  }
 }
 
 export async function POST(req: Request) {
@@ -309,87 +349,95 @@ export async function POST(req: Request) {
 
     // ── 路徑 2 & 3：非 IG URL 或純文字 → LLM 穿搭對話 ──────────
     //
-    // ★ 新架構：立刻回覆「收到」，背景用 Push API 推送每一步進度
+    // 為什麼不先回一則「⏳ 收到」：
+    //   那會用掉唯一的 replyToken，導致後面的卡片只能走 Push API，
+    //   而 Push 在 LINE 免費方案每月有上限，用完之後全部靜默失敗 ——
+    //   從使用者端看就是「只收到收到、然後就沒下文」。
     //
-    // Step 1：在 LINE 5 秒 timeout 前送出第一則「已收到」
-    if (event.replyToken) {
-      await replyText(event.replyToken, "⏳ 收到！正在幫你分析穿搭，請稍候...");
-    }
+    // 現在改成：顯示「輸入中」動畫（免費、不用掉 replyToken），
+    // 背景跑完整流程，最後用 replyToken 一次回 [卡片, 建議]。
+    // replyToken 有效期約一分鐘，maxDuration 是 60 秒，剛好在範圍內；
+    // 真的來不及才退回 Push。
+    if (userId) await startLoading(userId);
 
-    // Step 2：after() 背景處理（Hobby plan 最多 15 秒）
-    // 用 const 捕捉迴圈變數，避免 closure 問題
     const capturedUserId = userId;
     const capturedText = text;
     const capturedNonIgUrls = nonIgUrls;
+    const capturedReplyToken = event.replyToken;
 
     after(async () => {
       const debug = process.env.CHAT_DEBUG === "true";
+      // 進度訊息預設只寫 log 不推播 —— 每一則都吃 push 配額。
+      // 真的要在手機上看逐步進度再開 CHAT_PUSH_PROGRESS=true。
+      const pushProgress = process.env.CHAT_PUSH_PROGRESS === "true";
+      const t0 = Date.now();
+      const ms = () => `${Date.now() - t0}ms`;
+
+      console.log(`[webhook] after() 開始 userId=${capturedUserId?.slice(0, 8) ?? "null"} text=${capturedText.slice(0, 40)}`);
 
       try {
-        // onProgress：每個 phase 完成後立刻 push 一則訊息給使用者
-        // 若沒有 userId（不應發生），靜默略過 push
-        const onProgress = capturedUserId
-          ? async (msg: string) => {
-              await pushMessage(capturedUserId, msg);
-            }
-          : undefined;
+        const onProgress = async (msg: string) => {
+          console.log(`[webhook] 進度 (${ms()}) ${msg.split("\n")[0]}`);
+          if (pushProgress && capturedUserId) await pushMessage(capturedUserId, msg);
+        };
 
-        // 執行完整穿搭流程
         const reply = await generateChatReply(capturedUserId, capturedText, {
           nonIgUrls: capturedNonIgUrls.length > 0 ? capturedNonIgUrls : undefined,
           onProgress,
         });
+        console.log(`[webhook] generateChatReply 完成 (${ms()}) outfits=${reply.outfits?.length ?? 0}`);
 
-        if (!capturedUserId) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const messages: any[] = [];
 
-        // 有推薦 → Flex carousel（橫向滑動、可點連結、可按讚）
-        // 沒推薦或組不出卡片 → 退回純文字，使用者至少看得到原因
         const flex = reply.outfits ? buildOutfitCarousel(reply.outfits) : null;
 
         if (flex) {
-          const note =
-            reply.prefScope === "user"
-              ? "幫你挑了這幾套 ✨（已參考你收藏的單品，左右滑動看看）"
-              : reply.prefScope === "global"
-                ? "幫你挑了這幾套 ✨（你還沒有收藏，先用大家的當參考 —— 按 ♡ 收藏會更準）"
-                : "幫你挑了這幾套 ✨（左右滑動瀏覽，按 ♡ 收藏會讓下次更準）";
+          messages.push({
+            type: "text",
+            text:
+              reply.prefScope === "user"
+                ? "幫你挑了這幾套 ✨（已參考你收藏的單品，左右滑動看看）"
+                : reply.prefScope === "global"
+                  ? "幫你挑了這幾套 ✨（你還沒有收藏，先用大家的當參考 —— 按 ♡ 收藏會更準）"
+                  : "幫你挑了這幾套 ✨（左右滑動瀏覽，按 ♡ 收藏會讓下次更準）",
+          });
+          messages.push(flex);
 
-          await pushFlex(capturedUserId, flex, note);
-
-          // 卡片先送出去，再花一次 LLM 往返寫那段穿搭建議。
-          // 順序很重要：建議失敗或逾時的話，使用者至少已經看到三套卡片了。
+          // 卡片跟建議放在同一次 reply 裡（最多 5 則），不用多花一次 push
           if (reply.advice) {
             const provider = process.env.CHAT_PROVIDER ||
               (process.env.ANTHROPIC_API_KEY ? "anthropic" :
                process.env.OPENAI_API_KEY    ? "openai"    : "rules");
             const advice = await writeOutfitAdvice(reply.advice, provider);
+            console.log(`[webhook] 穿搭建議 (${ms()}) ${advice ? "完成" : "沒產出"}`);
             if (advice) {
-              await pushMessage(
-                capturedUserId,
-                `💡 第 ${reply.advice.outfitIndex} 套的搭配建議\n\n${advice}`
-              );
+              messages.push({
+                type: "text",
+                text: `💡 第 ${reply.advice.outfitIndex} 套的搭配建議\n\n${advice}`,
+              });
             }
-          }
-
-          if (process.env.CHAT_DEBUG === "true") {
-            await pushMessage(capturedUserId, reply.text.slice(0, 4900));
           }
         } else {
           if (!siteUrl() && reply.outfits?.length) {
             console.warn("[webhook] SITE_URL 沒設，卡片會沒有圖");
           }
-          await pushMessage(capturedUserId, reply.text.slice(0, 4900));
+          messages.push({ type: "text", text: reply.text.slice(0, 4900) });
         }
 
-      } catch (e) {
-        console.error("[webhook] 背景處理失敗:", e);
-        // 推送錯誤通知（debug 模式顯示詳情）
-        if (capturedUserId) {
-          const errMsg = debug
-            ? `❌ 處理時發生錯誤：\n${String(e).slice(0, 400)}`
-            : "很抱歉，處理時發生問題，請稍後再試 🙏";
-          await pushMessage(capturedUserId, errMsg);
+        if (debug && flex) {
+          messages.push({ type: "text", text: reply.text.slice(0, 4900) });
         }
+
+        await deliver(capturedReplyToken, capturedUserId, messages);
+        console.log(`[webhook] after() 結束 (${ms()})`);
+
+      } catch (e) {
+        console.error(`[webhook] 背景處理失敗 (${ms()}):`, e);
+        const errMsg = debug
+          ? `❌ 處理時發生錯誤：\n${String(e).slice(0, 400)}`
+          : "很抱歉，處理時發生問題，請稍後再試 🙏";
+        await deliver(capturedReplyToken, capturedUserId, [{ type: "text", text: errMsg }]);
       }
     });
   }
