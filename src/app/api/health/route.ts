@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { fashionTable, query } from "@/lib/rds";
+import {
+  fashionTable,
+  productsTable,
+  query,
+  queryProducts,
+  hasSeparateProductsDb,
+} from "@/lib/rds";
 import { listStyles, loadStyleCandidates, resolveProductSource } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +62,8 @@ function checkEnv(): Check {
     missing,
     dbHost: maskHost(process.env.DB_HOST),
     fashionTable,
+    productsDbHost: maskHost(process.env.PRODUCTS_DB_HOST),
+    productsTable,
     pipelineApiUrl: process.env.PIPELINE_API_URL ?? null,
     pipelineTokenSet: Boolean(process.env.PIPELINE_TOKEN),
   };
@@ -184,6 +192,41 @@ async function checkPipeline(onVercel: boolean): Promise<Check> {
   }
 }
 
+// ── 商品 RDS（跟 IG 那台是分開的兩台）─────────────────────
+async function checkProductsDatabase(): Promise<Check> {
+  if (!hasSeparateProductsDb) {
+    return {
+      ok: true,
+      separate: false,
+      detail: "PRODUCTS_DB_HOST 沒設，商品沿用 IG 那條連線",
+    };
+  }
+
+  try {
+    const [row] = await queryProducts<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${productsTable}`
+    );
+
+    return {
+      ok: true,
+      separate: true,
+      host: maskHost(process.env.PRODUCTS_DB_HOST),
+      table: productsTable,
+      rowCount: Number(row?.n ?? 0),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      separate: true,
+      host: maskHost(process.env.PRODUCTS_DB_HOST),
+      table: productsTable,
+      detail: String(err),
+      hint:
+        "連不到商品 RDS。跟 IG 那台一樣，security group 要放行這台伺服器的 IP。",
+    };
+  }
+}
+
 // ── 推薦引擎（style_kb + 商品向量 + 使用者偏好）─────────────
 async function checkRecommender(): Promise<Check> {
   const styles = listStyles();
@@ -219,13 +262,14 @@ async function checkRecommender(): Promise<Check> {
         top: sample.top.length,
         bottom: sample.bottom.length,
       },
-      detail:
-        "找不到商品向量的來源：fashion_items 沒有 source='product' 的列，" +
-        "也沒有一張帶 embedding 的 products 表。",
-      hint:
-        "商品那批要嘛以 source='product' 寫進 fashion_items，" +
-        "要嘛在同一個資料庫裡有 products 表。" +
-        "如果商品在另一台 RDS，那需要第二組連線設定。",
+      detail: hasSeparateProductsDb
+        ? `商品 RDS 上找不到帶 embedding 的 ${productsTable} 表`
+        : "PRODUCTS_DB_HOST 沒設，而 IG 這台上找不到商品向量",
+      hint: hasSeparateProductsDb
+        ? "確認 PRODUCTS_DB_* 指對機器、PRODUCTS_TABLE 表名對、" +
+          "security group 有放行這台伺服器的 IP"
+        : "商品在另一台 RDS 的話要設 PRODUCTS_DB_HOST / _PORT / _NAME / " +
+          "_USER / _PASSWORD（見 .env.example）",
     };
   }
 
@@ -234,7 +278,9 @@ async function checkRecommender(): Promise<Check> {
     const conditions = ["embedding IS NOT NULL"];
     if (source.sourceFilter) conditions.push("source = 'product'");
 
-    const [row] = await query<{ n: string }>(
+    const run = source.database === "products" ? queryProducts : query;
+
+    const [row] = await run<{ n: string }>(
       `SELECT count(*)::text AS n FROM ${source.table}
         WHERE ${conditions.join(" AND ")}`
     );
@@ -264,6 +310,7 @@ async function checkRecommender(): Promise<Check> {
       bottom: sample.bottom.length,
     },
     productSource: {
+      database: source.database === "products" ? "商品 RDS" : "IG RDS（共用）",
       table: source.table,
       idColumn: source.idColumn,
       sourceFilter: source.sourceFilter,
@@ -281,13 +328,14 @@ export async function GET() {
 
   const env = checkEnv();
 
-  const [database, pipeline, recommender] = await Promise.all([
+  const [database, productsDatabase, pipeline, recommender] = await Promise.all([
     checkDatabase(),
+    checkProductsDatabase().catch((err) => ({ ok: false, detail: String(err) })),
     checkPipeline(onVercel),
     checkRecommender().catch((err) => ({ ok: false, detail: String(err) })),
   ]);
 
-  const checks = { env, database, pipeline, recommender };
+  const checks = { env, database, productsDatabase, pipeline, recommender };
 
   const problems = Object.entries(checks)
     .filter(([, check]) => !check.ok)

@@ -188,3 +188,8 @@ FASHION_TABLE, PIPELINE_TOKEN, ALLOWED_ORIGINS, GARMENT_DEDUP_THRESHOLD
 ```
 
 `PIPELINE_OUTPUT_DIR` 可以改暫存圖片 / 影片的位置，預設 `pipeline/outputs/`。
+
+商品在另一台 RDS 的話還要 `PRODUCTS_DB_HOST` / `_PORT` / `_NAME` / `_USER` /
+`_PASSWORD` / `_SSLMODE` 跟 `PRODUCTS_TABLE`。`db_reader.get_connection()` 是
+IG 那台，`get_products_connection()` 是商品那台；沒設 `PRODUCTS_DB_HOST` 時
+後者會退回前者。

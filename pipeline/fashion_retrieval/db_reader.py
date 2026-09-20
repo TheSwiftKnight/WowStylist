@@ -85,39 +85,55 @@ def _is_network_error(error: psycopg2.OperationalError) -> bool:
     )
 
 
-def _connection_options() -> dict[str, Any]:
+# 這個專案有兩台 PostgreSQL：
+#
+#   DB_*          IG RDS   —— pipeline 寫進來的 IG 單品、ingest_jobs、style_tags
+#   PRODUCTS_DB_* 商品 RDS —— 電商商品和它們的向量（只讀）
+#
+# PRODUCTS_DB_HOST 沒設的話，商品會沿用 IG 那條連線。
+
+PRODUCTS_TABLE = os.getenv("PRODUCTS_TABLE", "products")
+
+
+def has_separate_products_db() -> bool:
+    return bool(os.getenv("PRODUCTS_DB_HOST"))
+
+
+def _connection_options(prefix: str = "DB_") -> dict[str, Any]:
     return {
-        "host": os.getenv("DB_HOST"),
-        "port": os.getenv("DB_PORT"),
-        "dbname": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD"),
-        "sslmode": os.getenv("DB_SSLMODE", "require"),
-        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+        "host": os.getenv(f"{prefix}HOST"),
+        "port": os.getenv(f"{prefix}PORT", "5432"),
+        "dbname": os.getenv(f"{prefix}NAME"),
+        "user": os.getenv(f"{prefix}USER"),
+        "password": os.getenv(f"{prefix}PASSWORD"),
+        "sslmode": os.getenv(f"{prefix}SSLMODE", "require"),
+        "connect_timeout": int(
+            os.getenv(f"{prefix}CONNECT_TIMEOUT", "10")
+        ),
     }
 
 
-def get_connection():
+def _connect(prefix: str = "DB_", label: str = "IG RDS"):
     """
-    Create and return a PostgreSQL connection using environment variables.
+    建立連線。一般 DNS 連不上時會用公共 DNS 再試一次
+    （見 resolve_public_host 的說明）。
     """
 
     required_vars = [
-        "DB_HOST",
-        "DB_PORT",
-        "DB_NAME",
-        "DB_USER",
-        "DB_PASSWORD",
+        f"{prefix}HOST",
+        f"{prefix}NAME",
+        f"{prefix}USER",
+        f"{prefix}PASSWORD",
     ]
 
     missing = [key for key in required_vars if not os.getenv(key)]
 
     if missing:
         raise RuntimeError(
-            f"Missing database environment variables: {', '.join(missing)}"
+            f"{label} 的環境變數沒設齊: {', '.join(missing)}"
         )
 
-    options = _connection_options()
+    options = _connection_options(prefix)
 
     try:
         return psycopg2.connect(**options)
@@ -144,6 +160,28 @@ def get_connection():
             **options,
             hostaddr=public_ip,
         )
+
+
+def get_connection():
+    """
+    IG RDS：pipeline 寫進來的 IG 單品、ingest_jobs、style_tags。
+    """
+
+    return _connect("DB_", "IG RDS")
+
+
+def get_products_connection():
+    """
+    商品 RDS：電商商品和它們的向量。跟 IG 那台是不同機器。
+
+    PRODUCTS_DB_HOST 沒設的話退回 IG 那條連線
+    （兩批資料放同一台時才會這樣）。
+    """
+
+    if not has_separate_products_db():
+        return get_connection()
+
+    return _connect("PRODUCTS_DB_", "商品 RDS")
 
 
 # ============================================================
@@ -299,7 +337,7 @@ def fetch_products(limit=None):
             "limit must be greater than 0."
         )
 
-    query = """
+    query = f"""
         SELECT
             product_id,
             title,
@@ -308,7 +346,7 @@ def fetch_products(limit=None):
             image_data,
             image_mime,
             category
-        FROM products
+        FROM {PRODUCTS_TABLE}
         WHERE category IN ('top', 'bottom')
           AND image_data IS NOT NULL
     """
@@ -319,7 +357,8 @@ def fetch_products(limit=None):
         query += " LIMIT %s"
         params.append(limit)
 
-    with get_connection() as conn:
+    # 商品在商品那台（見 get_products_connection）
+    with get_products_connection() as conn:
         with conn.cursor(
             cursor_factory=RealDictCursor
         ) as cursor:

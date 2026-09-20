@@ -20,12 +20,22 @@
 //    表並不存在；這裡從 fashion_items（source='instagram'）取，
 //    用 ingest_jobs.sender_id 對回 LINE 的 userId。
 //
+//    注意這裡跨了兩台 RDS：商品向量在商品那台（PRODUCTS_DB_*），
+//    使用者偏好在 IG 那台（DB_*）。兩邊都是 BGE-M3 編的、都已經
+//    L2 normalize，所以在同一個語意空間，可以直接算 cosine。
+//
 // 3. 同一個風格在 KB 裡有好幾筆（不同來源文章），Python 版只取第一筆，
 //    這裡把所有筆的 matches 併起來、依 product_id 去重取最高分。
 
 import { readFileSync } from "fs";
 import { join } from "path";
-import { fashionTable, query } from "@/lib/rds";
+import {
+  fashionTable,
+  productsTable,
+  query,
+  queryProducts,
+  hasSeparateProductsDb,
+} from "@/lib/rds";
 
 // ── 參數 ──────────────────────────────────────────────────────────────────────
 
@@ -320,12 +330,18 @@ type ProductSource = {
   hasUrl: boolean;
   /** 這張表的 bottom 叫什麼：'bottom' 或 'pants' */
   bottomCategory: string;
+  /** 商品是在自己那台 RDS，還是跟 IG 共用一台 */
+  database: "products" | "ig";
 };
 
 let productSourceCache: ProductSource | null | undefined;
 
-async function columnsOf(table: string): Promise<Set<string>> {
-  const rows = await query<{ column_name: string }>(
+async function columnsOf(
+  table: string,
+  where: "products" | "ig"
+): Promise<Set<string>> {
+  const run = where === "products" ? queryProducts : query;
+  const rows = await run<{ column_name: string }>(
     `SELECT column_name FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = $1`,
     [table]
@@ -334,51 +350,62 @@ async function columnsOf(table: string): Promise<Set<string>> {
 }
 
 /**
- * 商品向量放在哪張表？
+ * 商品向量放在哪？
  *
- * 目前可能有兩種擺法，開機時自己找一次：
- *   1. fashion_items 裡 source='product' 的列（統一表，category 是 top/pants）
- *   2. 另外一張 products 表（隊友原本的寫法，category 是 top/bottom）
+ * 正常情況：商品是自己一台 RDS（PRODUCTS_DB_*），表名 products。
  *
- * 兩種都沒有就回 null，呼叫端會給出清楚的錯誤。
+ * 但兩批資料放同一台的情況也支援 —— 沒設 PRODUCTS_DB_HOST 時，
+ * queryProducts 會退回 IG 那條連線，這裡就再多找一種擺法：
+ * fashion_items 裡 source='product' 的列。
+ *
+ * 都找不到就回 null，呼叫端會給出清楚的錯誤。
  */
 export async function resolveProductSource(): Promise<ProductSource | null> {
   if (productSourceCache !== undefined) return productSourceCache;
 
-  try {
-    // ── 1. 統一表 ──
-    const unified = await columnsOf(fashionTable);
-    if (unified.has("embedding") && unified.has("source")) {
-      const [row] = await query<{ n: string }>(
-        `SELECT count(*)::text AS n FROM ${fashionTable} WHERE source = 'product'`
-      );
-      if (Number(row?.n ?? 0) > 0) {
-        productSourceCache = {
-          table: fashionTable,
-          idColumn: "source_item_id",
-          sourceFilter: "product",
-          hasTitle: unified.has("title"),
-          hasPrice: unified.has("price_twd"),
-          hasUrl: unified.has("product_url"),
-          bottomCategory: "pants",
-        };
-        return productSourceCache;
-      }
-    }
+  const database = hasSeparateProductsDb ? "products" : "ig";
 
-    // ── 2. 獨立的 products 表 ──
-    const products = await columnsOf("products");
+  try {
+    // ── 1. 商品表 ──
+    const products = await columnsOf(productsTable, "products");
+
     if (products.has("embedding") && products.has("product_id")) {
       productSourceCache = {
-        table: "products",
+        table: productsTable,
         idColumn: "product_id",
         sourceFilter: null,
         hasTitle: products.has("title"),
         hasPrice: products.has("price_twd"),
         hasUrl: products.has("product_url"),
         bottomCategory: "bottom",
+        database,
       };
       return productSourceCache;
+    }
+
+    // ── 2. 跟 IG 共用一台時，商品也可能是寫進 fashion_items 的 ──
+    if (!hasSeparateProductsDb) {
+      const unified = await columnsOf(fashionTable, "ig");
+
+      if (unified.has("embedding") && unified.has("source")) {
+        const [row] = await query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM ${fashionTable} WHERE source = 'product'`
+        );
+
+        if (Number(row?.n ?? 0) > 0) {
+          productSourceCache = {
+            table: fashionTable,
+            idColumn: "source_item_id",
+            sourceFilter: "product",
+            hasTitle: unified.has("title"),
+            hasPrice: unified.has("price_twd"),
+            hasUrl: unified.has("product_url"),
+            bottomCategory: "pants",
+            database: "ig",
+          };
+          return productSourceCache;
+        }
+      }
     }
   } catch (err) {
     console.warn("[rank] 找不到商品向量的來源：", err);
@@ -423,7 +450,10 @@ export async function loadCandidateProducts(
     where += ` AND source = $${params.length}`;
   }
 
-  const rows = await query<{
+  // 商品在自己那台（沒設 PRODUCTS_DB_* 時 queryProducts 會退回 IG 那條）
+  const run = source.database === "products" ? queryProducts : query;
+
+  const rows = await run<{
     product_id: string | number;
     category: string;
     embedding: unknown;
