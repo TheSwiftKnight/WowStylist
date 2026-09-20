@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
 import { extractAnyUrls } from "@/lib/url";
-import { requestIngest } from "@/lib/pipeline";
+import { requestIngest, warmUp } from "@/lib/pipeline";
 import { createFailedJob } from "@/lib/jobs";
 import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "@/lib/chat";
 
@@ -33,6 +33,10 @@ import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "
 //   注意：Push API 在 LINE 免費方案有月用量限制（每月 500 則）。
 
 export const dynamic = "force-dynamic";
+
+// 免費方案的分析服務冷啟動要一分鐘左右，送件會在 after() 裡等那麼久。
+// Vercel 預設的 function 上限比這短，所以放寬。
+export const maxDuration = 60;
 
 type LineTextMessageEvent = {
   type: string;

@@ -5,6 +5,9 @@ import { createFailedJob } from "@/lib/jobs";
 
 export const dynamic = "force-dynamic";
 
+// 分析服務冷啟動可能要一分鐘
+export const maxDuration = 60;
+
 // POST /api/ingest — 把一條 IG 連結送進分析 pipeline
 //
 // 立刻回 job id，不等 pipeline 跑完（整條要幾十秒到幾分鐘）。
