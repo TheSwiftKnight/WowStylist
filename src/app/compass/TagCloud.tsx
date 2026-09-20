@@ -11,12 +11,6 @@ const KIND_LABEL: Record<StyleTagKind, string> = {
 
 const KINDS: StyleTagKind[] = ["style", "color", "mood"];
 
-/** 權重 0~1 對應到字級，權重高的標籤看起來就大一點（像 Your Algorithm）。 */
-function sizeFor(weight: number) {
-  const clamped = Math.min(1, Math.max(0, weight));
-  return `${(15 + clamped * 19).toFixed(1)}px`;
-}
-
 export default function TagCloud({
   initialTags,
   readOnly = false,
@@ -37,7 +31,6 @@ export default function TagCloud({
     if (!label) return;
     setError(null);
 
-    // 之後資料庫接上 Amazon RDS，這支 API 的實作換掉即可（見 src/lib/tags.ts）。
     const res = await fetch("/api/tags", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -109,11 +102,7 @@ export default function TagCloud({
     <>
       <div className="tagcloud">
         {tags.map((tag) => (
-          <span
-            key={tag.id}
-            className={`tag tag--${tag.kind}`}
-            style={{ fontSize: sizeFor(tag.weight) }}
-          >
+          <span key={tag.id} className={`tag tag--${tag.kind}`}>
             {editingId === tag.id && !readOnly ? (
               <input
                 className="tag__input"

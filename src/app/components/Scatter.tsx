@@ -20,8 +20,7 @@ const SLOTS: Slot[] = [
   { style: { bottom: "6%", right: "4%" }, rotate: -6 },
   { style: { top: "40%", left: "1.5%" }, rotate: 9 },
   { style: { top: "46%", right: "1.5%" }, rotate: -9 },
-  { style: { top: "2%", left: "31%" }, rotate: -3 },
-  { style: { bottom: "3%", left: "44%" }, rotate: 6 },
+  { style: { top: "3%", left: "19%" }, rotate: -3 },
 ];
 
 const HAND_NOTES = [
@@ -72,9 +71,6 @@ function buildPool(photos: string[]): Deco[] {
       note: HAND_NOTES[i % HAND_NOTES.length],
     });
   });
-  if (photos.length === 0) {
-    pool.push({ kind: "polaroid", photo: null, note: HAND_NOTES[0] });
-  }
   return pool;
 }
 

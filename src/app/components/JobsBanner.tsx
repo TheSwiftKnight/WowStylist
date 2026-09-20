@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { stageLabel, type IngestJob } from "@/lib/jobTypes";
 
@@ -9,7 +9,9 @@ import { stageLabel, type IngestJob } from "@/lib/jobTypes";
  *
  * pipeline 是非同步的：連結送出去之後 Apify → Claude Vision → BGE-M3
  * 要跑幾十秒到幾分鐘。這個元件每兩秒問一次 /api/jobs，
- * 有 job 從「跑完」變成 done 就 router.refresh() 把新卡片拉進來。
+ * 有 job 從「跑完」變成 done 就 router.refresh() 把新卡片拉進來，
+ * 同時打一次 /api/tags/sync —— 新單品的 text_description 丟給 Claude
+ * 標成三個標籤，這樣 style 風向標上馬上看得到這次收藏的風格。
  */
 export default function JobsBanner({
   initialJobs,
@@ -18,6 +20,8 @@ export default function JobsBanner({
 }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<IngestJob[]>(initialJobs);
+  // 一輪只補標一次；不擋著的話 poll 每兩秒就會多打一次 Claude
+  const tagging = useRef(false);
 
   const active = jobs.filter(
     (job) => job.status === "queued" || job.status === "running"
@@ -25,6 +29,9 @@ export default function JobsBanner({
 
   useEffect(() => {
     if (active.length === 0) return;
+
+    // 又有新的在跑了 → 這輪跑完要再補標一次
+    tagging.current = false;
 
     let cancelled = false;
 
@@ -42,8 +49,18 @@ export default function JobsBanner({
 
         setJobs(data.jobs);
 
-        // 全部跑完了 → 把新寫進 RDS 的單品撈上來
-        if (stillActive === 0) router.refresh();
+        // 全部跑完了 → 先讓 Claude 把新單品標好，再把新卡片撈上來
+        if (stillActive === 0) {
+          if (!tagging.current) {
+            tagging.current = true;
+            try {
+              await fetch("/api/tags/sync", { method: "POST" });
+            } catch {
+              // 標籤補不上不影響收藏，風向標上的按鈕還能再補一次
+            }
+          }
+          router.refresh();
+        }
       } catch {
         // 網路抖一下就算了，下一輪再說
       }

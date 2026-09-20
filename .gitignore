@@ -34,4 +34,5 @@ next-env.d.ts
 data/style-kb/cache/
 data/style-kb/debug/
 data/style-kb/dry_hits.jsonl
-
+.vercel
+.env*
