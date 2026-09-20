@@ -3,7 +3,7 @@ import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
 import { extractAnyUrls } from "@/lib/url";
 import { saveLinkBasic, enrichLink } from "@/lib/ingest";
-import { generateChatReply } from "@/lib/chat";
+import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "@/lib/chat";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
@@ -193,6 +193,31 @@ export async function POST(req: Request) {
             }
           }
           console.log(`[webhook] 背景補抓完成 ${pending.length} 筆`);
+        });
+      }
+      continue;
+    }
+
+    // ── 特殊指令：使用者傳「結束這次討論」→ 結束 session ──────────
+    // session 只在此處結束；LLM 不會自動切換 session。
+    if (text.trim() === "結束這次討論") {
+      if (userId) {
+        endFashionSession(userId);
+        if (event.replyToken) {
+          await replyText(
+            event.replyToken,
+            "已更新使用者偏好並開啟新的對話 ✅\n下次傳訊息時將自動開啟新對話。"
+          );
+        }
+        // 偏好更新交給背景（LLM call 較慢）
+        const capturedUid = userId;
+        after(async () => {
+          const p = process.env.CHAT_PROVIDER ||
+            (process.env.OPENROUTER_API_KEY ? "openrouter" :
+             process.env.ANTHROPIC_API_KEY  ? "anthropic"  :
+             process.env.OPENAI_API_KEY     ? "openai"     : "rules");
+          await updateUserPreferenceFile(capturedUid, p);
+          await pushMessage(capturedUid, "偏好已更新 💾");
         });
       }
       continue;

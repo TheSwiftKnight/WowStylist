@@ -30,7 +30,7 @@
 import { resolve } from "path";
 import { existsSync } from "fs";
 
-const envPath = resolve(process.cwd(), ".env.local");
+const envPath = resolve(process.cwd(), ".env");
 if (existsSync(envPath)) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { configDotenv } = require("dotenv") as typeof import("dotenv");
@@ -176,9 +176,8 @@ const BATCH_SCENARIOS: { label: string; msg: string; cmd?: "end" | "status" }[] 
   { label: "Turn 5 — 補充新 session",
     msg:   "要有連身裙，顏色要鮮豔" },
 
-  { label: "手動結束 session（觸發偏好更新）",
-    msg:   "",
-    cmd:   "end" },
+  { label: "使用者傳「結束這次討論」結束 session（觸發偏好更新）",
+    msg:   "結束這次討論" },
 ];
 
 async function runBatch(userId: string): Promise<void> {
@@ -236,7 +235,8 @@ async function runInteractive(userId: string): Promise<void> {
       rl.prompt();
       return;
     }
-    if (input === "/end") {
+    // "/end" 指令 或 直接輸入「結束這次討論」（模擬 LINE 使用者行為）
+    if (input === "/end" || input.trim() === "結束這次討論") {
       await handleEnd(userId);
       rl.resume();
       rl.prompt();
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
   console.log(`${c("dim", `模式          = ${batch ? "batch（自動腳本）" : "interactive（互動 readline）"}`)}`);
 
   if (!batch) {
-    console.log(`\n${c("yellow", "指令：/end 結束 session｜/status 查看狀態｜/quit 退出")}`);
+    console.log(`\n${c("yellow", "指令：/end 或「結束這次討論」結束 session｜/status 查看狀態｜/quit 退出")}`);
     console.log(c("dim", "─────────────────────────────────────────\n"));
   }
 
