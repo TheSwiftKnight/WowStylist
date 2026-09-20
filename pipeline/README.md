@@ -1,135 +1,143 @@
-# pipeline — Instagram → 單品 → RDS
+# pipeline — Instagram → garments → RDS
 
-WowStylist 的分析後端。原本是另一個 repo（HachThon），現在整包搬進來，
-跟 Next.js 同一個專案、同一份 `.env`（`../.env`，python-dotenv 會自己往上找）。
+WowStylist's analysis backend. It used to be a separate repo (HachThon); the whole
+thing now lives in here, in the same project as Next.js and sharing one `.env`
+(`../.env` — python-dotenv walks up and finds it).
 
-Next.js 不能跑 Python，所以這裡是一支獨立的 HTTP 服務，
-由 `src/lib/pipeline.ts` 用 `POST /ingest` 呼叫。
+Next.js can't run Python, so this is a standalone HTTP service, called by
+`src/lib/pipeline.ts` via `POST /ingest`.
 
 ```text
-LINE  ──貼文連結──>  Next.js /api/line/webhook
-                          │ 秒回使用者，after() 背景送件
+LINE  ──post link──>  Next.js /api/line/webhook
+                          │ instant reply, submits in the background with after()
                           ▼
                     POST localhost:8000/ingest
-                          │ 建 ingest_jobs 一列，立刻回 job_id
+                          │ inserts a row into ingest_jobs, returns job_id immediately
                           ▼
               fashion_retrieval/pipeline.py
-                  Apify           抓貼文 / Reel 原始 JSON
-                  Parser          下載圖片；Reel 每 2 秒抽一格
-                  Image Filter    Claude 篩掉沒衣服的 + dHash 去掉重複畫面
-                  Analyzer        Claude Vision → 每件衣服一段描述 + tags
-                  Encoder         BGE-M3 → 1024 維向量
-                  DB Writer       upsert 進 fashion_items
-                          │ 每階段回寫 ingest_jobs.status / stage
+                  Apify           fetches raw post / Reel JSON
+                  Parser          downloads images; grabs one Reel frame every 2 s
+                  Image Filter    Claude drops images with no clothes + dHash drops duplicate frames
+                  Analyzer        Claude Vision → one description + tags per garment
+                  Encoder         BGE-M3 → 1024-dim vector
+                  DB Writer       upserts into fashion_items
+                          │ every stage writes back ingest_jobs.status / stage
                           ▼
                     Amazon RDS (PostgreSQL)
 ```
 
-## 檔案
+## Files
 
-| 檔案 | 做什麼 |
-|------|--------|
-| `api/main.py` | FastAPI：`POST /ingest`、`GET /jobs/:id`、`GET /health` |
-| `fashion_retrieval/pipeline.py` | orchestrator：一條 URL 從頭跑到 RDS |
-| `fashion_retrieval/apify_client.py` | IG URL → Apify 原始 JSON |
-| `fashion_retrieval/post_parser.py` | 貼文 / 輪播 → 本機圖片 + caption |
-| `fashion_retrieval/reel_parser.py` | Reel → 下載 mp4、每 2 秒抽一格 |
-| `fashion_retrieval/image_filter.py` | Claude 語意篩選 + dHash 近似畫面去重 |
-| `fashion_retrieval/fashion_analyzer.py` | Claude Vision → garment 描述 + display/outfit tags |
-| `fashion_retrieval/fashion_encoder.py` | BGE-M3（Hugging Face Inference API） |
-| `fashion_retrieval/fashion_formatter.py` | 組成統一 item 格式並編碼 |
-| `fashion_retrieval/db_writer.py` | 寫進 `fashion_items`：欄位自動偵測、NOT NULL 先擋、`(source, source_item_id)` upsert |
-| `fashion_retrieval/db_reader.py` | 讀商品 RDS（之後配商品用） |
-| `migrations/001_fashion_items.sql` | 建表 / 補欄位（跑一次） |
+| File | What it does |
+|------|--------------|
+| `api/main.py` | FastAPI: `POST /ingest`, `GET /jobs/:id`, `GET /health` |
+| `fashion_retrieval/pipeline.py` | Orchestrator: one URL all the way to RDS |
+| `fashion_retrieval/apify_client.py` | IG URL → raw Apify JSON |
+| `fashion_retrieval/post_parser.py` | Post / carousel → local images + caption |
+| `fashion_retrieval/reel_parser.py` | Reel → downloads the mp4, grabs a frame every 2 s |
+| `fashion_retrieval/image_filter.py` | Claude semantic filtering + dHash near-duplicate frame removal |
+| `fashion_retrieval/fashion_analyzer.py` | Claude Vision → garment description + display/outfit tags |
+| `fashion_retrieval/fashion_encoder.py` | BGE-M3 (Hugging Face Inference API) |
+| `fashion_retrieval/fashion_formatter.py` | Builds the unified item format and encodes it |
+| `fashion_retrieval/db_writer.py` | Writes into `fashion_items`: auto column detection, NOT NULL pre-checks, `(source, source_item_id)` upsert |
+| `fashion_retrieval/db_reader.py` | Reads the products RDS (for product matching later) |
+| `migrations/001_fashion_items.sql` | Creates tables / adds columns (run once) |
 
-## 跑起來
+## Running it
 
-以下指令**都在專案根目錄跑**（不是 `pipeline/` 裡面）。
-
-```bash
-npm run pipeline:install   # 建 pipeline/.venv + 裝套件（不用 activate）
-npm run db:doctor          # 檢查環境變數 / 套件 / 連不連得到 RDS / 資料表
-npm run db:migrate         # 建表（連得到 RDS 才有用）
-npm run pipeline           # 起服務，port 8000
-npm run pipeline:health    # 應該回 "ok": true
-```
-
-### 為什麼不用 activate
-
-`pipeline/py` 這支小 shell script 固定用 `pipeline/.venv/bin/python`，
-所有 npm 指令都走它。這樣「套件裝在哪個 python、跑的時候用哪個 python」
-永遠是同一個，不管你當下有沒有 activate、有沒有 conda。
-
-第一次跑 `pipeline:install` 時它會自己把 venv 建起來。
-想用自己的環境也可以 —— activate 之後把 `./py` 換成 `python` 就好。
-
-**venv 不能跨機器共用**（裡面存的是絕對路徑）。同一個資料夾在別台機器打開過
-的話，`rm -rf pipeline/.venv` 再 `npm run pipeline:install` 重建。
-`py` 偵測到 venv 跑不動會直接告訴你這件事，不會讓你在半殘的環境裡除錯。
+All of the commands below run **from the project root** (not inside `pipeline/`).
 
 ```bash
-npm run db:show            # 看 RDS 裡實際有什麼（唯讀）
-npm run db:show -- --full  # 描述不截斷
-npm run db:show -- --id 42 # 某一列的全部欄位
+npm run pipeline:install   # creates pipeline/.venv + installs packages (no activate needed)
+npm run db:doctor          # checks env vars / packages / RDS reachability / tables
+npm run db:migrate         # creates tables (only works once RDS is reachable)
+npm run pipeline           # starts the service on port 8000
+npm run pipeline:health    # should return "ok": true
 ```
 
-`npm run db:doctor` 是卡住時的第一站 —— 它會一關一關告訴你哪裡不對、
-怎麼修，包括 RDS 連不上時是 Publicly accessible 還是 security group 的問題。
+### Why there's no activate
 
-`/health` 回的內容：缺哪個環境變數、連不連得上 DB、`fashion_items` 上有哪些欄位、
-`missing_columns` 是不是空的（不是空的 = migration 還沒跑完整）、
-`can_upsert` 是不是 `true`（false = 少了 unique index，重跑會長重複列）。
+The little shell script `pipeline/py` always uses `pipeline/.venv/bin/python`, and
+every npm command goes through it. That way "which python the packages went into"
+and "which python runs them" are always the same, whether or not you have anything
+activated, and whether or not you use conda.
 
-### 常見狀況
+The first `pipeline:install` run creates the venv for you. You can use your own
+environment instead — activate it and replace `./py` with `python`.
 
-| 症狀 | 原因 | 修法 |
-|------|------|------|
-| `sh: uvicorn: command not found` | 套件沒裝 | `npm run pipeline:install` |
-| `error: externally-managed-environment` | 裝到 macOS 的系統 / Homebrew python 去了 | `npm run pipeline:install`（走 venv，不會碰系統 python） |
-| `ModuleNotFoundError: No module named 'apify_client'` | 套件沒裝，或裝在別的 Python 環境 | `npm run pipeline:install`；`npm run db:doctor` 會印出它用的是哪支 python |
-| `.venv 壞了或不是這台機器建的` | venv 換過機器、或底下的 python 被升版/移掉 | `rm -rf pipeline/.venv && npm run pipeline:install` |
-| `psql: connection ... Operation timed out`，IP 是 `172.31.x.x` | RDS 的 Publicly accessible = No，從 VPC 外面連不到 | 見下面 |
-| `Table 'fashion_items' not found` | migration 還沒跑 | `npm run db:migrate` |
+**A venv can't be shared across machines** (it stores absolute paths). If the same
+folder has been opened on another machine, `rm -rf pipeline/.venv` and rebuild with
+`npm run pipeline:install`. When `py` detects a broken venv it tells you so directly
+rather than letting you debug inside a half-working environment.
 
-### RDS 連不到
+```bash
+npm run db:show            # shows what's actually in RDS (read-only)
+npm run db:show -- --full  # don't truncate descriptions
+npm run db:show -- --id 42 # every column of one row
+```
 
-`172.31.x.x` / `10.x.x.x` / `192.168.x.x` 都是 VPC 內網位址 ——
-RDS endpoint 從外面解出這種 IP，代表這台的 **Publicly accessible 是 No**，
-不管密碼對不對都連不上。三條路：
+`npm run db:doctor` is the first stop whenever you're stuck — it walks the gates one
+by one and tells you what's wrong and how to fix it, including whether an
+unreachable RDS is a "Publicly accessible" or a security-group problem.
 
-1. **開公開存取**：AWS Console → RDS → 這台 instance → Modify →
-   Connectivity → Public access 選 Publicly accessible → 套用。
-   然後 Connectivity & security → VPC security groups → Inbound rules →
-   Add rule：PostgreSQL / 5432 / My IP。
-2. **SSH 跳板**：VPC 裡有 EC2 的話
-   `ssh -N -L 5432:<rds-endpoint>:5432 ec2-user@<bastion>`，
-   再把 `.env` 的 `DB_HOST` 改成 `127.0.0.1`。
-3. **請開這台 RDS 的人跑 migration**，或問清楚他們是怎麼連的。
+What `/health` returns: which env vars are missing, whether the DB is reachable,
+which columns exist on `fashion_items`, whether `missing_columns` is empty
+(non-empty = the migration hasn't fully run) and whether `can_upsert` is `true`
+(false = the unique index is missing, so re-runs will grow duplicate rows).
 
-解出來是公開 IP 但還是 timeout → 那就是 security group 沒開你的 IP，走第 1 點的後半段。
+### Common situations
 
-## 部署（不想一直開著本機 server）
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `sh: uvicorn: command not found` | packages not installed | `npm run pipeline:install` |
+| `error: externally-managed-environment` | installed into macOS system / Homebrew python | `npm run pipeline:install` (uses the venv, never touches system python) |
+| `ModuleNotFoundError: No module named 'apify_client'` | packages not installed, or installed into a different Python | `npm run pipeline:install`; `npm run db:doctor` prints which python it uses |
+| `.venv is broken or was built on another machine` | the venv moved machines, or the python underneath was upgraded/removed | `rm -rf pipeline/.venv && npm run pipeline:install` |
+| `psql: connection ... Operation timed out`, IP is `172.31.x.x` | RDS "Publicly accessible" = No, unreachable from outside the VPC | see below |
+| `Table 'fashion_items' not found` | migration hasn't run | `npm run db:migrate` |
 
-`Dockerfile` 在這個資料夾，`render.yaml`（專案根目錄）和 `railway.json` 也都寫好了。
-**Render 是目前的首選** —— 不用綁信用卡、吃 Dockerfile、每月 750 小時。
-Railway 現在只給 $1/月的額度，試用期過了就停。
+### Can't reach RDS
+
+`172.31.x.x` / `10.x.x.x` / `192.168.x.x` are all VPC-internal addresses — if the RDS
+endpoint resolves to one of these from outside, that instance has
+**Publicly accessible = No** and no password will get you in. Three options:
+
+1. **Turn on public access**: AWS Console → RDS → the instance → Modify →
+   Connectivity → Public access → Publicly accessible → apply.
+   Then Connectivity & security → VPC security groups → Inbound rules →
+   Add rule: PostgreSQL / 5432 / My IP.
+2. **SSH bastion**: if there's an EC2 box inside the VPC,
+   `ssh -N -L 5432:<rds-endpoint>:5432 ec2-user@<bastion>`,
+   then change `DB_HOST` in `.env` to `127.0.0.1`.
+3. **Ask whoever owns the instance to run the migration**, or ask how they connect.
+
+If it resolves to a public IP and still times out, the security group doesn't allow
+your IP — do the second half of option 1.
+
+## Deployment (for when you don't want a local server running)
+
+The `Dockerfile` is in this folder, and `render.yaml` (project root) and
+`railway.json` are both written already.
+**Render is the current first choice** — no credit card, takes a Dockerfile,
+750 hours a month. Railway now only gives $1/month of credit and stops once the
+trial is up.
 
 ### Render
 
-1. [render.com](https://render.com) 用 GitHub 登入 → **New → Blueprint**
-   → 選 `WowStylist` → 它會讀根目錄的 `render.yaml`。
-   （手動建也行：**New → Web Service**，Runtime 選 **Docker**，
-   **Root Directory** 填 `pipeline` ← 這步最關鍵，不填的話 Render
-   會以為整個 repo 是 Next.js。）
-2. 它會要你填 `sync: false` 的那些環境變數（見下一節）。
-3. Deploy。第一次 build 要五到十分鐘（要裝 opencv 跟 ffmpeg）。
-4. 拿到 `https://wowstylist-pipeline.onrender.com`。
+1. [render.com](https://render.com) → sign in with GitHub → **New → Blueprint**
+   → pick `WowStylist` → it reads `render.yaml` from the root.
+   (Manual works too: **New → Web Service**, Runtime = **Docker**,
+   **Root Directory** = `pipeline` ← this is the critical step; without it Render
+   assumes the whole repo is Next.js.)
+2. It asks you to fill in the env vars marked `sync: false` (see the next section).
+3. Deploy. The first build takes five to ten minutes (opencv and ffmpeg).
+4. You get `https://wowstylist-pipeline.onrender.com`.
 
-`PORT` 是 Render 給的，Dockerfile 已經吃了，不用自己設。
+`PORT` is provided by Render and the Dockerfile already reads it — don't set it yourself.
 
-### 要填的環境變數
+### Env vars to fill in
 
-值照你本機 `.env`：
+Use the same values as your local `.env`:
 
 ```
 APIFY_TOKEN            ANTHROPIC_API_KEY       HF_TOKEN
@@ -138,112 +146,123 @@ PRODUCTS_DB_HOST       PRODUCTS_DB_USER        PRODUCTS_DB_PASSWORD
 PIPELINE_TOKEN         ALLOWED_ORIGINS
 ```
 
-其他（`DB_PORT` / `DB_NAME` / `FASHION_TABLE` / `PRODUCTS_TABLE` …）
-`render.yaml` 已經給了預設值。
+The rest (`DB_PORT` / `DB_NAME` / `FASHION_TABLE` / `PRODUCTS_TABLE` …) already have
+defaults in `render.yaml`.
 
-兩件事：
+Two things:
 
-- **`PIPELINE_TOKEN` 這次一定要設。** 本機留空沒差，但這個網址是公開的，
-  不設等於誰都能叫你的 Apify 和 Claude 額度。`openssl rand -hex 24` 產一串，
-  Next.js 那邊（Vercel + 本機 `.env`）填一樣的。
-- `ALLOWED_ORIGINS` 填 `https://wow-stylist.vercel.app`（多個就逗號分隔）。
+- **`PIPELINE_TOKEN` is mandatory this time.** Leaving it empty locally is fine, but
+  this URL is public — without it anyone can burn your Apify and Claude credits.
+  Generate one with `openssl rand -hex 24` and set the same value on the Next.js side
+  (Vercel + local `.env`).
+- Set `ALLOWED_ORIGINS` to `https://wow-stylist.vercel.app` (comma-separated for several).
 
-### RDS 要讓它連得進來
+### Letting RDS accept the connection
 
-Render 的免費方案沒有固定 IP，所以**兩台** RDS 的 security group 都要開：
+Render's free plan has no fixed IP, so the security groups of **both** RDS instances
+have to be opened:
 
-> EC2 → Security Groups → 該 RDS 的 SG → Inbound rules → Add rule
+> EC2 → Security Groups → that RDS's SG → Inbound rules → Add rule
 > → PostgreSQL / 5432 / `0.0.0.0/0`
 
-密碼務必夠強 —— 這等於把資料庫開到公網。demo 完記得換掉。
+Make sure the password is strong — this exposes the database to the public internet.
+Change it once the demo is over.
 
-### 別讓它睡著 ← 這段很重要
+### Don't let it fall asleep ← this part matters
 
-Render 免費方案**閒置 15 分鐘就把容器收掉**，下一個請求要等它冷啟動，
-大約一分鐘。對這個專案的影響是：睡著之後第一次丟連結進 LINE，送件會卡住。
+Render's free plan **reclaims the container after 15 idle minutes**, and the next
+request has to wait out a cold start of roughly a minute. For this project that
+means: after it falls asleep, the first link you send into LINE will hang on submit.
 
-程式這邊已經擋了一層（`src/lib/pipeline.ts`）：逾時放寬到 60 秒、失敗自動
-重試一次，webhook 一確認有 IG 連結就先打 `/health` 把它叫醒，趁我們還在跟
-LINE 要使用者名稱的時候讓它開始起來。但一分鐘的冷啟動還是會讓使用者等。
+The code already absorbs one layer of this (`src/lib/pipeline.ts`): the timeout is
+relaxed to 60 s, a failure is retried once automatically, and as soon as the webhook
+confirms there's an IG link it pings `/health` to wake the service up while we're
+still fetching the user's name from LINE. But a one-minute cold start still makes the
+user wait.
 
-根治方法是讓它不要睡 —— 拿一個免費的 uptime 監控每 10 分鐘打一次
-`https://你的服務.onrender.com/health`：
+The real fix is to stop it sleeping — point a free uptime monitor at
+`https://your-service.onrender.com/health` every 10 minutes:
 
-- [cron-job.org](https://cron-job.org)（免費、不用信用卡）
-- [UptimeRobot](https://uptimerobot.com)（免費方案 5 分鐘間隔）
+- [cron-job.org](https://cron-job.org) (free, no credit card)
+- [UptimeRobot](https://uptimerobot.com) (free plan, 5-minute interval)
 
-一個月 744 小時，750 小時的額度剛好夠一個服務全天候開著 ——
-但也就只夠一個，別再拿同一個帳號開第二個免費服務。
+A month is 744 hours, so the 750-hour allowance is just enough to keep one service up
+around the clock — but only one, so don't run a second free service on the same account.
 
-Demo 前 10 分鐘先打一次 `/health` 確認它是醒的。
+Ping `/health` ten minutes before the demo to confirm it's awake.
 
-### 接上 Next.js
+### Wiring it to Next.js
 
-Vercel → Project → Settings → Environment Variables：
+Vercel → Project → Settings → Environment Variables:
 
 ```
 PIPELINE_API_URL = https://wowstylist-pipeline.onrender.com
-PIPELINE_TOKEN   = （跟 Render 上同一串）
+PIPELINE_TOKEN   = (the same string as on Render)
 ```
 
-改完要 **Redeploy** 才生效。本機 `.env` 想打 Render 的話改同樣兩個。
+You need a **Redeploy** for the change to take effect. To point your local setup at
+Render, change the same two values in `.env`.
 
-### 驗
+### Verifying
 
 ```bash
 curl https://wowstylist-pipeline.onrender.com/health
 ```
 
-`ok: true`、`database.missing_columns` 是空的、`can_upsert` 是 true 就對了。
-然後開 `https://wow-stylist.vercel.app/api/health`，`checks.pipeline.ok` 要是 true。
-再從 LINE 丟一則貼文，`npm run db:show` 看 job 有沒有跑起來。
+You want `ok: true`, an empty `database.missing_columns` and `can_upsert: true`.
+Then open `https://wow-stylist.vercel.app/api/health` — `checks.pipeline.ok` should
+be true. Finally send a post from LINE and run `npm run db:show` to see whether the
+job started.
 
-### 會踩到的地方
+### Things you'll trip over
 
-| 症狀 | 原因 |
+| Symptom | Cause |
 |---|---|
-| build 失敗，log 裡在跑 `npm install` | Root Directory 沒填 `pipeline` |
-| deploy 成功但 healthcheck 一直失敗 | 多半是 `HF_TOKEN` 沒設 —— `fashion_encoder.py` 在 import 時就 raise，uvicorn 起不來。看 Logs 的第一段 |
-| `/health` 回 `database.ok: false` | RDS security group 沒開 `0.0.0.0/0`（兩台都要） |
-| `/ingest` 回 401 | `PIPELINE_TOKEN` 兩邊不一樣 |
-| 第一次丟連結很久沒反應，之後就正常 | 冷啟動。設個 uptime 監控讓它不要睡 |
-| job 永遠停在 running | 重新部署時把正在跑的 task 砍掉了。服務啟動會自動把超過 30 分鐘的收成 failed（`STALE_JOB_MINUTES` 可調） |
+| Build fails and the log shows `npm install` running | Root Directory isn't set to `pipeline` |
+| Deploy succeeds but the healthcheck keeps failing | Usually `HF_TOKEN` isn't set — `fashion_encoder.py` raises at import time, so uvicorn never starts. Check the first part of the Logs |
+| `/health` returns `database.ok: false` | The RDS security group doesn't allow `0.0.0.0/0` (both instances) |
+| `/ingest` returns 401 | `PIPELINE_TOKEN` differs between the two sides |
+| The first link takes forever, then everything is fine | Cold start. Set up an uptime monitor so it doesn't sleep |
+| A job is stuck in running forever | The running task was killed by a redeploy. On startup the service automatically marks anything older than 30 minutes as failed (`STALE_JOB_MINUTES` is configurable) |
 
-### 其他選項
+### Other options
 
-| 平台 | 要信用卡 | 冷啟動 | 備註 |
+| Platform | Credit card | Cold start | Notes |
 |---|---|---|---|
-| **Render** free | 否 | 閒置 15 分鐘後約 1 分鐘 | 750 小時/月，首選 |
-| **Hugging Face Spaces**（Docker SDK） | 否 | 閒置很久才睡 | 2 vCPU / 16GB，要把 Dockerfile 的 port 改成 7860（`app_port`），repo 另外推到 HF；你們本來就有 HF 帳號 |
-| **Google Cloud Run** | 要（免費額度用不完） | 幾秒到十幾秒 | 縮到零、按用量計費，最省；設定步驟比較多 |
-| **Fly.io** | 要 | 可設定縮到零 | 免費方案對新帳號已經取消 |
-| **Railway** | 否 | 不睡 | 只剩 $1/月額度，試用過期就停 |
+| **Render** free | No | ~1 min after 15 idle minutes | 750 h/month, first choice |
+| **Hugging Face Spaces** (Docker SDK) | No | Sleeps only after a long idle | 2 vCPU / 16 GB; change the Dockerfile port to 7860 (`app_port`) and push the repo to HF separately; you already have an HF account |
+| **Google Cloud Run** | Yes (free tier is more than enough) | Seconds to a dozen seconds | Scales to zero, pay per use, cheapest; more setup steps |
+| **Fly.io** | Yes | Can be configured to scale to zero | Free plan no longer offered to new accounts |
+| **Railway** | No | Doesn't sleep | Only $1/month of credit left, stops when the trial expires |
 
-### 費用與限制
+### Cost and limits
 
-- Reel 一則會跑十幾次 Claude Vision，單次要一到數分鐘。這種偶發工作量
-  對 Render 的免費方案沒問題，但容器一直開著會吃滿 750 小時，就是剛好而已。
-- 容器的檔案系統是暫時的。下載的圖片和影格寫在 `/tmp`，重開就沒了 ——
-  無所謂，成品（含圖片 bytea）都進 RDS 了。
-- 目前是單一 instance、用 FastAPI 的 BackgroundTasks。同時丟很多連結會塞在
-  同一個行程裡排隊。要更穩就得把 job queue 拉出來（Redis + worker），
-  demo 用不到。
+- One Reel triggers a dozen-plus Claude Vision calls and takes one to several minutes.
+  That kind of bursty workload is fine on Render's free plan, but a container that
+  stays up all the time eats the full 750 hours — just barely enough.
+- The container filesystem is ephemeral. Downloaded images and frames are written to
+  `/tmp` and are gone after a restart — which is fine, since the results (images as
+  bytea included) all go into RDS.
+- Today it's a single instance using FastAPI BackgroundTasks. Throwing many links in
+  at once queues them inside the same process. Making that robust means pulling the
+  job queue out (Redis + worker), which the demo doesn't need.
 
-## 不開服務也能直接測
+## Testing without starting the service
 
-在專案根目錄：
+From the project root:
 
 ```bash
-# 跑完整條並寫進 RDS
+# run the whole chain and write to RDS
 npm run ig -- "https://www.instagram.com/p/XXXX/"
 
-# 只跑分析，把「準備好要送上 RDS 的每一列」印出來，不寫 DB
+# analysis only — print every row that would go to RDS, without writing to the DB
 npm run ig -- "https://www.instagram.com/reel/XXXX/" --no-db
 ```
 
-（網址的 query string 會自動去掉，`?igsh=` / `?stkn=` 那些不用先清。）
+(The URL's query string is stripped automatically; no need to clean off `?igsh=` /
+`?stkn=` first.)
 
-`--no-db` 會印出 `rows`，每一列長這樣：
+`--no-db` prints `rows`, where each row looks like this:
 
 ```json
 {
@@ -267,40 +286,41 @@ npm run ig -- "https://www.instagram.com/reel/XXXX/" --no-db
 }
 ```
 
-key 就是 `fashion_items` 的欄位名，`db_writer.write_items()` 直接照著 INSERT。
-只有兩個是顯示用的替身：`embedding_dim` 實際是 `embedding`（1024 個 float，
-印出來沒法看），`image_bytes` 實際是 `image_data`（bytea）。
+The keys are the `fashion_items` column names, and `db_writer.write_items()` INSERTs
+them as-is. Only two are display stand-ins: `embedding_dim` is really `embedding`
+(1024 floats, unreadable when printed) and `image_bytes` is really `image_data` (bytea).
 
-`title` / `price_twd` / `product_url` 是商品端的欄位，IG 來的一律 `null`；
-反過來 `display_tags` / `outfit_tags` / `instagram_*` / `shortcode` / `timestamp`
-是 IG 專屬的，商品那邊會是 `null`。
+`title` / `price_twd` / `product_url` are product-side columns and are always `null`
+for IG items; conversely `display_tags` / `outfit_tags` / `instagram_*` / `shortcode` /
+`timestamp` are IG-only and are `null` on the product side.
 
-`source_item_id` 的組法（`pipeline.py` 的 `build_source_item_id`）：
+How `source_item_id` is built (`build_source_item_id` in `pipeline.py`):
 
 ```
-post: <shortcode>_p<第幾張圖>_<第幾件衣服>_<category>
-reel: <shortcode>_t<第幾秒>_<第幾件衣服>_<category>
+post: <shortcode>_p<image index>_<garment index>_<category>
+reel: <shortcode>_t<second>_<garment index>_<category>
 ```
 
-同一則貼文重跑會打到 `(source, source_item_id)` 的 unique index，走 upsert。
+Re-running the same post hits the `(source, source_item_id)` unique index and upserts.
 
-## 一則貼文的成本
+## Cost of one post
 
-| 階段 | 外部呼叫 |
-|------|----------|
+| Stage | External calls |
+|-------|----------------|
 | `apify` | Apify × 1 |
-| `parse` | IG CDN（下載圖 / 影片） |
-| `filter` | Claude × 1（一次把所有圖丟進去） |
-| `analyze` | Claude Vision × N（一張圖一次） |
-| `encode` | HF × M（一件衣服一次） |
+| `parse` | IG CDN (downloads images / video) |
+| `filter` | Claude × 1 (all images in one call) |
+| `analyze` | Claude Vision × N (one per image) |
+| `encode` | HF × M (one per garment) |
 | `write` | RDS |
 
-Reel 一則可能是十幾次 Claude Vision。`GARMENT_DEDUP_THRESHOLD`（預設 0.82）
-會在 encode 之前先把描述太像的衣服收掉，設 0 可以關掉。
+One Reel can mean a dozen-plus Claude Vision calls. `GARMENT_DEDUP_THRESHOLD`
+(default 0.82) drops garments whose descriptions are too similar before the encode
+stage; set it to 0 to turn that off.
 
-## 環境變數
+## Environment variables
 
-全部在 `../.env`（跟 Next.js 共用一份）。pipeline 會用到：
+All of them live in `../.env` (shared with Next.js). The pipeline uses:
 
 ```
 APIFY_TOKEN, ANTHROPIC_API_KEY, HF_TOKEN,
@@ -308,9 +328,10 @@ DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE,
 FASHION_TABLE, PIPELINE_TOKEN, ALLOWED_ORIGINS, GARMENT_DEDUP_THRESHOLD
 ```
 
-`PIPELINE_OUTPUT_DIR` 可以改暫存圖片 / 影片的位置，預設 `pipeline/outputs/`。
+`PIPELINE_OUTPUT_DIR` changes where temporary images / videos go; it defaults to
+`pipeline/outputs/`.
 
-商品在另一台 RDS 的話還要 `PRODUCTS_DB_HOST` / `_PORT` / `_NAME` / `_USER` /
-`_PASSWORD` / `_SSLMODE` 跟 `PRODUCTS_TABLE`。`db_reader.get_connection()` 是
-IG 那台，`get_products_connection()` 是商品那台；沒設 `PRODUCTS_DB_HOST` 時
-後者會退回前者。
+If products live on a different RDS instance you also need `PRODUCTS_DB_HOST` /
+`_PORT` / `_NAME` / `_USER` / `_PASSWORD` / `_SSLMODE` plus `PRODUCTS_TABLE`.
+`db_reader.get_connection()` is the IG instance and `get_products_connection()` is the
+products one; without `PRODUCTS_DB_HOST` the latter falls back to the former.
