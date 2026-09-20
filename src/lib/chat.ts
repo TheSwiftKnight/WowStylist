@@ -13,14 +13,20 @@ import {
   type StyleCandidates,
   type StyleMatch,
   type Product,
+  loadStyleSuggestions,
+  loadProductDescriptions,
+  listStyleProfiles,
+  matchStylesByQuery,
   type RankedProduct,
+  type StyleSuggestion,
 } from "@/lib/rank";
 
 // 穿搭對話核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
-//   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY，預設 nvidia/nemotron-3-ultra-550b-a55b:free）
-//   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY）
+//   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY，預設 claude-haiku-4-5-20251001）★ 預設
+//                    原本這裡是 OpenRouter 的 Nemotron，已整個換成 Claude；
+//                    兩邊 API 的差異寫在下面 callAnthropic 上方。
 //   - "openai"     : OpenAI API（需 OPENAI_API_KEY）
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
@@ -133,25 +139,51 @@ function isGreetingOrHowTo(text: string): boolean {
 }
 
 // ── Prompt：意圖分類器 ────────────────────────────────────────────────────────
-const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根據使用者輸入，判斷意圖並輸出結構化結果。
+/**
+ * 分類器 prompt 裡的風格資料庫。
+ *
+ * 原本是寫死 6 個風格，但 style_kb.jsonl 裡有 48 個 —— 寫死的那份等於讓
+ * 分類器永遠只認得六分之一的庫存。這裡改成開機時從 KB 生成，
+ * 而且把 aliases / occasions / seasons 都列出來，因為使用者打進來的
+ * 常常不是風格名，而是場合（「婚禮賓客」）或季節（「秋天通勤」）。
+ *
+ * 約 7000 字元／3.5k tokens，Claude 吃得下；模組層算一次就快取住。
+ */
+function buildStyleDatabaseSection(): string {
+  const profiles = listStyleProfiles();
+  if (profiles.length === 0) {
+    return "（style_kb.jsonl 讀不到或是空的，這次沒有可用的風格）";
+  }
+  return profiles
+    .map((p) => {
+      const parts = [
+        p.aliases.length ? `aliases=[${p.aliases.join(", ")}]` : null,
+        // 場合取最常出現的 8 個就好，全列會讓 prompt 膨脹又稀釋重點
+        p.occasions.length ? `occasions=[${p.occasions.slice(0, 8).join(", ")}]` : null,
+        p.seasons.length ? `seasons=[${p.seasons.join(", ")}]` : null,
+      ].filter(Boolean);
+      return `${p.styleZh ?? p.style}: ${parts.join(", ")}`;
+    })
+    .join("\n");
+}
+
+let classifierPromptCache: string | null = null;
+
+function classifierSystemPrompt(): string {
+  if (classifierPromptCache) return classifierPromptCache;
+
+  classifierPromptCache = `你是 WowStylist 穿搭需求分析器。根據使用者輸入，判斷意圖並輸出結構化結果。
 
 ## 風格資料庫（用於語意匹配）
 以下是可用的穿搭風格，每個風格含有別名、場合、季節供語意比對：
 
-老錢風: aliases=[old money aesthetic, old money, 老錢, preppy, classic elegance], occasions=[日常通勤, 休閒聚會, 商務休閒, 度假, 週末出遊], seasons=[spring, fall, autumn, winter, summer]
-靜奢風: aliases=[stealth wealth, quiet luxury, 靜奢, 低調奢華, minimalist luxury], occasions=[日常穿著, 辦公室, 正式場合, 晚間活動, 特殊場合], seasons=[fall, winter, spring, summer]
-芭蕾風: aliases=[ballet core, balletcore, 芭蕾核心, 芭蕾女孩, ballet aesthetic, ballerina], occasions=[日常通勤, 休閒街頭, 舞蹈教室, 健身課程], seasons=[spring, fall, winter, summer]
-蝴蝶結甜美風: aliases=[coquette aesthetic, bow girl, coquette, 甜美, 蝴蝶結, feminine, girly], occasions=[紐約時裝週, 街拍, 春日約會, 通勤, 咖啡廳], seasons=[spring, winter, fall]
-田園風: aliases=[cottage core, cottagecore, 鄉村風, 田園, 自然風, nature, botanical], occasions=[健行, 野餐, 城市漫步, 音樂節], seasons=[spring, summer, fall, winter]
-明亮學院風: aliases=[light academia, light academia aesthetic, 學院風, 書卷氣, intellectual, academic], occasions=[咖啡廳, 校園, 圖書館, 半正式場合], seasons=[spring, fall, winter, summer]
+${buildStyleDatabaseSection()}
 
 ## 意圖類型定義
-- A：找「一件特定單品」——使用者給出條件（顏色、材質、款式等），想找某類型的單品，不涉及搭配
-- B：「已有一件指定衣物」——使用者描述手邊某件衣物，想找其他可以和它搭配的衣物
-- C：針對「場合或情境」——使用者描述要去哪裡或做什麼，想找完整一套穿搭，沒有指定任何特定衣物
+- 針對「場合或情境」——使用者描述要去哪裡或做什麼，想找完整一套穿搭，沒有指定任何特定衣物
 - 其他：閒聊、問候、詢問使用方式
 
-## 風格匹配規則（B 和 C 情境適用）
+## 風格匹配規則
 1. 將使用者輸入與風格資料庫中的 aliases 做語意比對（不限完全相符，語意相近即可）
 2. 若 aliases 匹配不足 5 個風格，再與 occasions 做語意比對補足
 3. 若仍不足，再與 seasons 比對補足
@@ -168,62 +200,87 @@ const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根�
 ### 其他（閒聊 / 問候 / 使用說明）
 直接輸出使用者原始訊息，不添加任何標籤。
 
-### A（找單品）
-直接輸出使用者原始訊息，不添加任何標籤。
-
-### B（有指定衣物，找搭配）
-[風格: {最多5個相符的中文風格名，逗號分隔；若無匹配則省略此行}]
-{使用者原始訊息（移除價格相關文字）}
-[item: {已知衣物的詳細描述，英文，包含 color/style/material 等特徵，例如：navy slim-fit wool blazer}]
-[keywords: {5~10個英文名詞或形容詞，逗號分隔，例如：navy, slim, formal, blazer, business, clean}]
-[price: {若有，英文描述，例如：under NT$2000；否則省略此行}]
-
-### C（找完整穿搭）
+### 找完整穿搭
 [風格: {最多5個相符的中文風格名，逗號分隔；若無匹配則省略此行}]
 {使用者原始訊息（移除價格相關文字）}
 [keywords: {5~10個英文名詞或形容詞，逗號分隔，涵蓋場合、風格、限制，例如：wedding guest, formal, light-color, elegant, feminine}]
 [price: {若有，英文描述，例如：under NT$3000；否則省略此行}]`;
 
+  return classifierPromptCache;
+}
+
 // LLM 回傳結果，content=null 時 reason 說明失敗原因
 type LLMResult = { content: string; reason: string } | { content: null; reason: string };
 
-// ── LLM 呼叫：OpenRouter ─────────────────────────────────────────────────────
-async function callOpenRouter(
+// ── LLM 呼叫：Claude（Anthropic Messages API）──────────────────────────────
+//
+// 跟先前用的 OpenRouter / Nemotron（OpenAI 相容格式）幾個關鍵差異：
+//
+//   1. 端點與認證
+//        OpenAI 相容：POST /chat/completions，Authorization: Bearer <key>
+//        Claude：      POST /v1/messages，x-api-key: <key> + anthropic-version
+//   2. system prompt
+//        OpenAI 相容：塞進 messages[0]，role="system"
+//        Claude：      是 body 最上層的 `system` 欄位，不進 messages
+//   3. max_tokens
+//        Claude 是**必填**，漏了直接 400
+//   4. 回應形狀
+//        OpenAI 相容：choices[0].message.content（字串，有些模型給 chunk 陣列）
+//        Claude：      content[] 是 block 陣列，文字在 type==="text" 的 .text，
+//                      而且可能不只一塊，要全部接起來
+//   5. 截斷判斷
+//        OpenAI 相容：choices[0].finish_reason === "length"
+//        Claude：      stop_reason === "max_tokens"
+//   6. 錯誤格式
+//        Claude 用 HTTP 狀態碼 + { type:"error", error:{ type, message } }；
+//        不像 OpenRouter 會拿 HTTP 200 包一個 error 物件回來，所以不用再多檢查一層
+//   7. temperature 範圍 0~1（OpenAI 是 0~2），而且沒有 reasoning / reasoning_effort
+//
+// 這裡刻意不做重試：整條流程跑在 webhook 的 after() 背景裡，時間預算很緊
+// （見 route.ts 的說明），寧可把失敗原因講清楚，讓上層降級到 rules。
+
+/** 最快也最便宜；分類這種照表填欄位的工作夠用。要更準可設 CHAT_MODEL=claude-sonnet-5。 */
+const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+
+function claudeModel(): string {
+  return process.env.CHAT_MODEL || DEFAULT_CLAUDE_MODEL;
+}
+
+async function callAnthropic(
   systemPrompt: string,
   userMessage: string,
-  maxTokens = 400
+  maxTokens = 400,
+  temperature = 0
 ): Promise<LLMResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    const reason = "NO_API_KEY: OPENROUTER_API_KEY 未設定";
+    const reason = "NO_API_KEY: ANTHROPIC_API_KEY 未設定";
     console.error(`[chat] ${reason}`);
     return { content: null, reason };
   }
 
-  const model = process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
-  const timeoutMs = 8000;
+  const model = claudeModel();
+  const timeoutMs = Number(process.env.CHAT_TIMEOUT_MS || 8000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
 
   try {
-    console.log(`[chat] OpenRouter 送出請求 model=${model} timeout=${timeoutMs}ms`);
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    console.log(`[chat] Claude 送出請求 model=${model} timeout=${timeoutMs}ms`);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.SITE_URL ?? "https://wowstylist.app",
-        "X-Title": "WowStylist",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
         model,
-        max_tokens: maxTokens,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
-        ],
+        max_tokens: maxTokens,   // Claude 必填
+        temperature,             // 分類用 0；寫建議時會調高一點
+        system: systemPrompt,    // 最上層欄位，不是 messages[0]
+        messages: [{ role: "user", content: userMessage }],
       }),
     });
     clearTimeout(timer);
@@ -231,54 +288,54 @@ async function callOpenRouter(
 
     if (!res.ok) {
       const body = await res.text();
-      const reason = `HTTP_${res.status} (${elapsed}ms): ${body.slice(0, 300)}`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      let detail = body.slice(0, 300);
+      try {
+        const parsed = JSON.parse(body) as { error?: { type?: string; message?: string } };
+        if (parsed.error) detail = `${parsed.error.type}: ${parsed.error.message}`;
+      } catch { /* 不是 JSON 就用原文 */ }
+
+      const hint =
+        res.status === 401 ? "（金鑰不對或沒權限）"
+        : res.status === 404 ? `（模型名稱可能有誤：${model}）`
+        : res.status === 429 ? "（rate limit 或額度用完）"
+        : res.status === 529 ? "（Anthropic 端過載，稍後再試）"
+        : "";
+
+      const reason = `HTTP_${res.status} (${elapsed}ms)${hint}: ${detail}`;
+      console.error(`[chat] Claude ${reason} model=${model}`);
       return { content: null, reason };
     }
 
     const data = (await res.json()) as {
-      choices?: {
-        finish_reason?: string;
-        message?: { content?: string | { text?: string }[] };
-      }[];
-      error?: { message?: string; code?: number };
+      content?: { type: string; text?: string }[];
+      stop_reason?: string;
+      usage?: { input_tokens?: number; output_tokens?: number };
     };
 
-    if (data.error) {
-      const reason = `API_ERROR code=${data.error.code}: ${data.error.message}`;
-      console.error(`[chat] OpenRouter ${reason} (${elapsed}ms) model=${model}`);
+    if (data.stop_reason === "max_tokens") {
+      const reason = `TRUNCATED stop_reason=max_tokens (${elapsed}ms) — 調高 maxTokens`;
+      console.error(`[chat] Claude ${reason} model=${model}`);
       return { content: null, reason };
     }
 
-    const choice = data.choices?.[0];
-    const msg = choice?.message;
-
-    if (choice?.finish_reason === "length") {
-      const reason = `TRUNCATED finish_reason=length (${elapsed}ms) — 考慮換小模型或降低 maxTokens`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    if (!msg) {
-      const raw = JSON.stringify(data).slice(0, 200);
-      const reason = `EMPTY_CHOICES (${elapsed}ms) raw=${raw}`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    const rawContent = msg.content;
-    const content = Array.isArray(rawContent)
-      ? rawContent.map((c) => (typeof c === "object" && c !== null ? (c.text ?? "") : String(c))).join("")
-      : rawContent ?? null;
+    // content 是 block 陣列，文字可能被切成好幾塊
+    const content = (data.content ?? [])
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "")
+      .join("")
+      .trim();
 
     if (!content) {
-      const raw = JSON.stringify(msg).slice(0, 200);
-      const reason = `EMPTY_CONTENT (${elapsed}ms) finish=${choice?.finish_reason} msg=${raw}`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      const raw = JSON.stringify(data).slice(0, 200);
+      const reason = `EMPTY_CONTENT (${elapsed}ms) stop_reason=${data.stop_reason} raw=${raw}`;
+      console.error(`[chat] Claude ${reason} model=${model}`);
       return { content: null, reason };
     }
 
-    console.log(`[chat] OpenRouter 回應成功 (${elapsed}ms) finish_reason=${choice?.finish_reason}`);
+    console.log(
+      `[chat] Claude 回應成功 (${elapsed}ms) stop_reason=${data.stop_reason} ` +
+      `tokens=${data.usage?.input_tokens ?? "?"}/${data.usage?.output_tokens ?? "?"}`
+    );
     return { content, reason: "ok" };
 
   } catch (e: unknown) {
@@ -286,49 +343,14 @@ async function callOpenRouter(
     const elapsed = Date.now() - startedAt;
     let reason: string;
     if (e instanceof Error && e.name === "AbortError") {
-      reason = `TIMEOUT >${elapsed}ms — 考慮換小模型：CHAT_MODEL=meta-llama/llama-3.1-8b-instruct:free`;
+      reason = `TIMEOUT >${elapsed}ms — 可調 CHAT_TIMEOUT_MS，或換更快的模型`;
     } else if (e instanceof TypeError) {
       reason = `NETWORK_ERROR (${elapsed}ms): ${e.message}`;
     } else {
       reason = `UNKNOWN_ERROR (${elapsed}ms): ${String(e)}`;
     }
-    console.error(`[chat] OpenRouter ${reason} model=${model}`);
+    console.error(`[chat] Claude ${reason} model=${claudeModel()}`);
     return { content: null, reason };
-  }
-}
-
-// ── LLM 呼叫：Anthropic ──────────────────────────────────────────────────────
-async function callAnthropic(
-  systemPrompt: string,
-  userMessage: string,
-  maxTokens = 400
-): Promise<string | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: process.env.CHAT_MODEL || "claude-haiku-4-5",
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userMessage }],
-      }),
-    });
-    if (!res.ok) {
-      console.error(`[chat] Anthropic HTTP ${res.status}:`, await res.text());
-      return null;
-    }
-    const data = (await res.json()) as { content?: { type: string; text?: string }[] };
-    return data.content?.find((c) => c.type === "text")?.text ?? null;
-  } catch (e) {
-    console.error("[chat] Anthropic 錯誤:", e);
-    return null;
   }
 }
 
@@ -370,18 +392,48 @@ async function callOpenAI(
   }
 }
 
+/**
+ * 決定要用哪個 provider。
+ *
+ * CHAT_PROVIDER 沒設就看有哪把金鑰（Claude 優先）。
+ *
+ * "openrouter" 是舊值 —— Nemotron 那條路已經整個移除了。舊的部署環境變數
+ * 可能還留著，直接當成未知 provider 會靜默降級到 rules（看起來像 LLM 壞了），
+ * 所以這裡認得它、印一行警告、然後走 Claude。
+ */
+function resolveProvider(): string {
+  const explicit = (process.env.CHAT_PROVIDER || "").trim().toLowerCase();
+
+  if (explicit === "openrouter") {
+    console.warn(
+      "[chat] CHAT_PROVIDER=openrouter 是舊設定（Nemotron 已移除），自動改用 anthropic。" +
+      "請把環境變數改成 anthropic 或留空。"
+    );
+    return "anthropic";
+  }
+
+  if (explicit) {
+    if (!["anthropic", "openai", "rules"].includes(explicit)) {
+      console.warn(`[chat] 不認得的 CHAT_PROVIDER=${explicit}，改用自動偵測`);
+    } else {
+      return explicit;
+    }
+  }
+
+  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  if (process.env.OPENAI_API_KEY) return "openai";
+  return "rules";
+}
+
 // 統一入口
 async function callLLM(
   provider: string,
   systemPrompt: string,
   userMessage: string,
-  maxTokens = 400
+  maxTokens = 400,
+  temperature = 0
 ): Promise<LLMResult> {
-  if (provider === "openrouter") return callOpenRouter(systemPrompt, userMessage, maxTokens);
-  if (provider === "anthropic") {
-    const content = await callAnthropic(systemPrompt, userMessage, maxTokens);
-    return content ? { content, reason: "ok" } : { content: null, reason: "ANTHROPIC_NO_RESPONSE" };
-  }
+  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens, temperature);
   if (provider === "openai") {
     const content = await callOpenAI(systemPrompt, userMessage, maxTokens);
     return content ? { content, reason: "ok" } : { content: null, reason: "OPENAI_NO_RESPONSE" };
@@ -536,6 +588,8 @@ interface SearchResult {
   debugSummary: string;
   // ── 以下是接上 rank.ts 之後新增的 ──
   style: StyleCandidates | null;
+  /** 這個風格底下的每一筆搭配建議（沒被 loadStyleCandidates 合併掉的原始資料） */
+  suggestions: StyleSuggestion[];
   products: Map<number, Product>;
   userPrefs: { top: number[][]; bottom: number[][]; scope: string };
   error: string | null;
@@ -552,6 +606,7 @@ function emptySearchResult(
     queryEmbedding: null,
     debugSummary,
     style: null,
+    suggestions: [],
     products: new Map(),
     userPrefs: { top: [], bottom: [], scope: "none" },
     error,
@@ -602,10 +657,35 @@ async function searchCandidates(
     if (style) break;
   }
 
+  // 分類器給的風格名對不到 KB（或根本沒給）→ 直接拿 query 去比對
+  // 名稱／別名／場合／季節。使用者常常打的是「婚禮賓客」「秋天通勤」這種
+  // 場合或季節，不是風格名。
+  if (!style) {
+    const plainText = classifiedResult.replace(/\[[^\]]*\]/g, " ");
+    const queryForMatch = [styleNames.join(" "), keywords, item, plainText]
+      .filter(Boolean).join(" ");
+
+    const matches = matchStylesByQuery(queryForMatch);
+    for (const m of matches.slice(0, 3)) {
+      const candidate = loadStyleCandidates(m.profile.style);
+      if (candidate) {
+        style = candidate;
+        debugParts.push(
+          `分類器風格對不到，改用 query 比對命中「${m.profile.styleZh ?? m.profile.style}」` +
+          `（分數 ${m.score}：${m.hits.join("、")}）`
+        );
+        console.log(
+          `[chat] 風格 fallback：${m.profile.style} score=${m.score} hits=${m.hits.join("、")}`
+        );
+        break;
+      }
+    }
+  }
+
   if (!style) {
     const reason = styleNames.length === 0
-      ? "分類器沒有給 [風格:] 標籤"
-      : `style_kb.jsonl 裡找不到：${styleNames.join(" / ")}`;
+      ? "分類器沒有給 [風格:] 標籤，query 也比對不到任何風格的名稱／場合／季節"
+      : `style_kb.jsonl 裡找不到：${styleNames.join(" / ")}，query 也比對不到任何風格的名稱／場合／季節`;
     console.log(`[chat] searchCandidates 跳過排序 — ${reason}`);
     return emptySearchResult(
       [...debugParts, reason].join(" | "),
@@ -666,6 +746,7 @@ async function searchCandidates(
       queryEmbedding,
       debugSummary: debugParts.join(" | "),
       style,
+      suggestions: loadStyleSuggestions(style.style),
       products,
       userPrefs: {
         top: topPrefs.embeddings,
@@ -692,9 +773,42 @@ async function searchCandidates(
 
 interface ScoredOutfit {
   items: CandidateItem[];
+  /** 明確分開上下身 —— Flex 卡片要分別放 like 按鈕跟商品連結 */
+  top: RankedProduct | null;
+  bottom: RankedProduct | null;
   score: number;
   reason: string;
 }
+
+/**
+ * 給 UI 用的推薦結果（不帶 embedding 那些重東西）。
+ * chat.ts 只負責算出這個；要變成 LINE Flex 卡片是 src/lib/flex.ts 的事。
+ */
+export type RecommendedItem = {
+  slot: "top" | "bottom";
+  productId: number;
+  title: string | null;
+  priceTwd: number | null;
+  productUrl: string | null;
+  finalScore: number;
+};
+
+export type RecommendedOutfit = {
+  /** 第幾套，從 1 開始 */
+  index: number;
+  styleZh: string;
+  items: RecommendedItem[];
+};
+
+/** generateChatReply 的回傳：純文字一定有，outfits 有推薦時才有。 */
+export type ChatReply = {
+  text: string;
+  outfits?: RecommendedOutfit[];
+  /** 卡片送出去之後，拿這個去呼叫 writeOutfitAdvice() 產生那段穿搭建議 */
+  advice?: AdviceContext;
+  /** 偏好來源，webhook 想顯示提示時可用 */
+  prefScope?: "user" | "global" | "none";
+};
 
 async function scoreOutfits(
   searchResult: SearchResult,
@@ -739,6 +853,8 @@ async function scoreOutfits(
 
     outfits.push({
       items,
+      top: top ?? null,
+      bottom: bottom ?? null,
       score,
       reason: style.outfitText ?? style.styleZh ?? style.style,
     });
@@ -808,21 +924,211 @@ async function formatRecommendation(
 
 // ── 推薦主流程（串接三段 dummy） ─────────────────────────────────────────────
 // debug 模式時將各步驟說明 push 到 debugLines（由呼叫者傳入）
+// ══════════════════════════════════════════════════════════════════════════════
+// 穿搭建議（推薦之後再補一段話）
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 三套是從同一個風格底下好幾筆「搭配建議」的候選池混合排序出來的
+// （見 rank.ts 的 loadStyleCandidates / mergeMatches），所以要先把每一套
+// 對回它最可能來自的那一筆建議，再挑「商品跟建議描述最吻合」的那一套來寫。
+
+/** 寫建議需要的全部素材。 */
+export type AdviceContext = {
+  outfitIndex: number;
+  styleZh: string;
+  /** 來源建議 */
+  sourceTitle: string | null;
+  dos: string[];
+  embedText: string | null;
+  suggestedTop: string | null;
+  suggestedBottom: string | null;
+  /** 實際挑中的商品 */
+  pickedTop: { title: string | null; description: string | null } | null;
+  pickedBottom: { title: string | null; description: string | null } | null;
+  /** 使用者這次的需求（原句 + 分類器抽出的關鍵字） */
+  userQuery: string;
+  /** 對應強度，debug 用 */
+  matchScore: number;
+};
+
+/**
+ * 把每一套對回最可能的來源建議，回傳「最吻合」的那一組。
+ *
+ * 吻合度 = 這套的上身在該建議 matches 裡的分數 + 下身的分數。
+ * 兩件都出現在同一筆建議裡的話再加權 —— 那代表這筆建議本來就提議這個組合，
+ * 而不是剛好各自命中。
+ */
+function pickBestSuggestion(
+  scored: ScoredOutfit[],
+  suggestions: StyleSuggestion[]
+): { outfitIdx: number; suggestion: StyleSuggestion; score: number } | null {
+  if (scored.length === 0 || suggestions.length === 0) return null;
+
+  let best: { outfitIdx: number; suggestion: StyleSuggestion; score: number } | null = null;
+
+  scored.forEach((outfit, idx) => {
+    const topId = outfit.top?.productId;
+    const bottomId = outfit.bottom?.productId;
+
+    for (const sug of suggestions) {
+      const t = topId !== undefined ? (sug.topMatches.get(topId) ?? 0) : 0;
+      const b = bottomId !== undefined ? (sug.bottomMatches.get(bottomId) ?? 0) : 0;
+      if (t === 0 && b === 0) continue;
+
+      // 兩件都來自同一筆建議 → 這筆建議本來就在講這個組合
+      const bothBonus = t > 0 && b > 0 ? 1.5 : 1;
+      const score = (t + b) * bothBonus;
+
+      if (!best || score > best.score) best = { outfitIdx: idx, suggestion: sug, score };
+    }
+  });
+
+  // 一筆都對不上（KB 還沒跑 build_style_lookup 之類）→ 拿第一套配第一筆有內容的建議
+  if (!best) {
+    const fallback = suggestions.find((x) => x.dos.length > 0 || x.embedText);
+    if (!fallback) return null;
+    return { outfitIdx: 0, suggestion: fallback, score: 0 };
+  }
+
+  return best;
+}
+
+/** 分類器輸出裡把使用者原句跟 keywords 挑出來，不要整包標籤都丟給 LLM。 */
+function summariseQuery(classifiedResult: string, rawText: string): string {
+  const keywords = classifiedResult.match(/\[keywords:\s*([^\]]+)\]/i)?.[1]?.trim();
+  const item = classifiedResult.match(/\[item:\s*([^\]]+)\]/i)?.[1]?.trim();
+  return [
+    rawText.trim(),
+    item ? `已有的單品：${item}` : null,
+    keywords ? `需求關鍵字：${keywords}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+async function buildAdviceContext(
+  scored: ScoredOutfit[],
+  searchResult: SearchResult,
+  classifiedResult: string,
+  rawText: string
+): Promise<AdviceContext | null> {
+  const picked = pickBestSuggestion(scored, searchResult.suggestions);
+  if (!picked) return null;
+
+  const outfit = scored[picked.outfitIdx];
+  const ids = [outfit.top?.productId, outfit.bottom?.productId]
+    .filter((x): x is number => typeof x === "number");
+  const descriptions = await loadProductDescriptions(ids);
+
+  const pick = (p: RankedProduct | null) =>
+    p ? { title: p.title, description: descriptions.get(p.productId) ?? null } : null;
+
+  return {
+    outfitIndex: picked.outfitIdx + 1,
+    styleZh: searchResult.style?.styleZh ?? searchResult.style?.style ?? "這個風格",
+    sourceTitle: picked.suggestion.sourceTitle,
+    dos: picked.suggestion.dos,
+    embedText: picked.suggestion.embedText,
+    suggestedTop: picked.suggestion.topDescription,
+    suggestedBottom: picked.suggestion.bottomDescription,
+    pickedTop: pick(outfit.top),
+    pickedBottom: pick(outfit.bottom),
+    userQuery: summariseQuery(classifiedResult, rawText),
+    matchScore: picked.score,
+  };
+}
+
+const ADVICE_SYSTEM_PROMPT = `你是 WowStylist 的穿搭顧問，要為使用者剛拿到的一套搭配寫一段建議。
+
+寫作規則：
+- 繁體中文，100~150 字，**一段連貫的話**，不要分行、不要條列、不要用 emoji
+- 開頭點出這套為什麼符合他這次的需求（要具體回扣他說的場合／風格／限制，不要空泛地說「很適合你」）
+- 中間自然地融入至少一條「搭配要訣」的內容，用你自己的話講，不要照抄
+- 結尾給一個能提升精緻度或時尚度的具體做法（例如比例、配件、材質、露出的長度）
+- 只能根據提供的商品描述講，不要編造顏色、材質、品牌等沒寫到的細節
+- 不要提到分數、資料庫、系統、來源文章標題這些東西，像一個造型師在說話
+
+只輸出那段建議本身，不要任何前言或標題。`;
+
+function buildAdviceMessage(ctx: AdviceContext): string {
+  return [
+    `【使用者這次的需求】\n${ctx.userQuery}`,
+    `【風格】${ctx.styleZh}`,
+    ctx.dos.length ? `【這套的搭配要訣】\n${ctx.dos.map((d) => `- ${d}`).join("\n")}` : null,
+    ctx.embedText ? `【搭配摘要】\n${ctx.embedText}` : null,
+    ctx.suggestedTop ? `【建議的上身】${ctx.suggestedTop}` : null,
+    ctx.suggestedBottom ? `【建議的下身】${ctx.suggestedBottom}` : null,
+    ctx.pickedTop
+      ? `【實際挑到的上身】${ctx.pickedTop.title ?? "(無標題)"}${ctx.pickedTop.description ? ` —— ${ctx.pickedTop.description}` : ""}`
+      : null,
+    ctx.pickedBottom
+      ? `【實際挑到的下身】${ctx.pickedBottom.title ?? "(無標題)"}${ctx.pickedBottom.description ? ` —— ${ctx.pickedBottom.description}` : ""}`
+      : null,
+  ].filter(Boolean).join("\n\n");
+}
+
+/**
+ * 寫那段穿搭建議。
+ *
+ * 由 webhook 在「卡片已經送出去之後」才呼叫 —— 這樣多一次 LLM 往返也不會
+ * 拖到使用者看到推薦的時間，失敗了就只是少一段話，卡片照樣在。
+ */
+export async function writeOutfitAdvice(
+  ctx: AdviceContext,
+  provider: string
+): Promise<string | null> {
+  const { content, reason } = await callLLM(
+    provider,
+    ADVICE_SYSTEM_PROMPT,
+    buildAdviceMessage(ctx),
+    500,
+    0.6, // 建議要讀起來像人話，不要像分類器
+  );
+
+  if (!content) {
+    console.warn(`[chat] 穿搭建議產生失敗（${reason}）`);
+    return null;
+  }
+  console.log(`[chat] 穿搭建議完成，對應第 ${ctx.outfitIndex} 套（吻合度 ${ctx.matchScore.toFixed(3)}）`);
+  return content.trim();
+}
+
+/** ScoredOutfit → 給 UI 的精簡結構（丟掉 embedding 等內部欄位）。 */
+function toRecommendedOutfits(
+  scored: ScoredOutfit[],
+  styleZh: string
+): RecommendedOutfit[] {
+  return scored.map((o, i) => {
+    const items: RecommendedItem[] = [];
+    for (const [slot, p] of [["top", o.top], ["bottom", o.bottom]] as const) {
+      if (!p) continue;
+      items.push({
+        slot,
+        productId: p.productId,
+        title: p.title,
+        priceTwd: p.priceTwd,
+        productUrl: p.productUrl,
+        finalScore: p.finalScore,
+      });
+    }
+    return { index: i + 1, styleZh, items };
+  }).filter((o) => o.items.length > 0);
+}
+
 async function runRecommendation(
   classifiedResult: string,
   session: FashionSession,
   provider: string,
+  rawText: string,
   debugLines?: string[]
-): Promise<string> {
+): Promise<{
+  text: string;
+  outfits: RecommendedOutfit[];
+  prefScope: "user" | "global" | "none";
+  advice: AdviceContext | null;
+}> {
   // Step A：搜尋候選服飾
   debugLines?.push("[4/6] 🔍 搜尋候選服飾（searchCandidates）...");
   const searchResult = await searchCandidates(classifiedResult, session);
   debugLines?.push(`      ↳ ${searchResult.debugSummary}`);
-  debugLines?.push(`      ↳ 各 layer 候選數：${
-    Object.entries(searchResult.candidatesByLayer)
-      .map(([k, v]) => `${k}=${v.length}`)
-      .join(", ")
-  }`);
 
   // Step B：評分排序
   debugLines?.push("[5/6] 📊 評分排序（scoreOutfits）...");
@@ -834,13 +1140,31 @@ async function runRecommendation(
 
   // Step C：格式化
   debugLines?.push("[6/6] ✍️  格式化推薦結果（formatRecommendation）...");
-  const result = await formatRecommendation(
+  const text = await formatRecommendation(
     scoredOutfits, classifiedResult, session, provider, searchResult
   );
-  debugLines?.push("      ↳ 完成，準備回傳");
 
-  return result;
+  const styleZh =
+    searchResult.style?.styleZh ?? searchResult.style?.style ?? "推薦搭配";
+  const outfits = toRecommendedOutfits(scoredOutfits, styleZh);
+  debugLines?.push(`      ↳ 完成，${outfits.length} 套可以做成卡片`);
+
+  // 挑一套來寫建議（只準備素材，LLM 呼叫留到卡片送出去之後）
+  const advice = await buildAdviceContext(scoredOutfits, searchResult, classifiedResult, rawText);
+  debugLines?.push(
+    advice
+      ? `      ↳ 建議對應第 ${advice.outfitIndex} 套（吻合度 ${advice.matchScore.toFixed(3)}，來源：${advice.sourceTitle ?? "—"}）`
+      : "      ↳ 對不到任何一筆搭配建議，這次不寫建議"
+  );
+
+  return {
+    text,
+    outfits,
+    prefScope: searchResult.userPrefs.scope as "user" | "global" | "none",
+    advice,
+  };
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 對外主函式
@@ -856,7 +1180,7 @@ export async function generateChatReply(
     // 由 webhook 傳入 pushMessage(userId, msg)；不傳時靜默略過
     onProgress?: (msg: string) => Promise<void>;
   }
-): Promise<string> {
+): Promise<ChatReply> {
   const nonIgUrls = options?.nonIgUrls;
   const onProgress = options?.onProgress;
   const debug = process.env.CHAT_DEBUG === "true";
@@ -865,15 +1189,10 @@ export async function generateChatReply(
   const debugLines: string[] = [];
   const D = (line: string) => { if (debug) debugLines.push(line); };
 
-  const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
-  const provider = explicit ||
-    (process.env.OPENROUTER_API_KEY ? "openrouter" :
-     process.env.ANTHROPIC_API_KEY  ? "anthropic"  :
-     process.env.OPENAI_API_KEY     ? "openai"     : "rules");
+  const provider = resolveProvider();
   const model = process.env.CHAT_MODEL ||
-    (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
-     provider === "anthropic"  ? "claude-haiku-4-5" :
-     provider === "openai"     ? "gpt-4o-mini" : "-");
+    (provider === "anthropic" ? DEFAULT_CLAUDE_MODEL :
+     provider === "openai"    ? "gpt-4o-mini" : "-");
 
   if (debug) {
     await onProgress?.(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
@@ -883,13 +1202,13 @@ export async function generateChatReply(
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
-    return chatWithRules(text);
+    return { text: chatWithRules(text) };
   }
 
   // ── 問候 / 使用說明：不進 session，直接 rules 回應 ─────────────────────────
   if (isGreetingOrHowTo(text)) {
     console.log(`[chat] 問候/使用說明，直接 rules 回應`);
-    return chatWithRules(text);
+    return { text: chatWithRules(text) };
   }
 
   // ── 使用者偏好 ──────────────────────────────────────────────────────────────
@@ -939,7 +1258,7 @@ export async function generateChatReply(
   D("[3/6] 🧠 意圖分類 + 風格匹配（CLASSIFIER_SYSTEM_PROMPT）...");
   const { content: classifiedResult, reason: classifyReason } = await callLLM(
     provider,
-    CLASSIFIER_SYSTEM_PROMPT,
+    classifierSystemPrompt(),
     accumulated,
     700
   );
@@ -948,7 +1267,7 @@ export async function generateChatReply(
     console.warn(`[chat] 分類器無回應（${classifyReason}），降級到 rules`);
     const errDetail = debug ? `\n原因：${classifyReason}` : "";
     await onProgress?.(`❌ 分析失敗，降級到關鍵字模式${errDetail}`);
-    return chatWithRules(text);
+    return { text: chatWithRules(text) };
   }
 
   const intent = parseIntent(classifiedResult);
@@ -958,7 +1277,9 @@ export async function generateChatReply(
   // ── 意圖不明：問清楚，不污染累積需求 ──────────────────────────────────────
   if (intent === "other") {
     // 不更新 accumulatedRequest（本次輸入不納入累積），也不記錄 turn
-    return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
+    return {
+      text: "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？",
+    };
   }
 
   // ── A / B / C：確認累積需求，記錄 turn ────────────────────────────────────
@@ -971,20 +1292,27 @@ export async function generateChatReply(
   // 撈出候選商品後由 rank.ts 算分，最後才格式化成使用者看到的推薦。
   await onProgress?.("🔍 抓到適合的風格了，正在從商品庫挑搭配...");
 
-  const recommendation = await runRecommendation(
+  const { text: recommendation, outfits, prefScope, advice } = await runRecommendation(
     classifiedResult,
     session,
     provider,
+    text,
     debug ? debugLines : undefined
   );
 
   appendTurn(session, { role: "assistant", content: recommendation, timestamp: Date.now() });
-  console.log(`[chat] 完成 sessionId=${session.sessionId} 總 turns=${session.turns.length}`);
+  console.log(
+    `[chat] 完成 sessionId=${session.sessionId} 總 turns=${session.turns.length} 套數=${outfits.length}`
+  );
 
-  if (debug) {
-    return `${debugLines.join("\n")}\n────────────\n${recommendation}`;
-  }
-  return recommendation;
+  return {
+    text: debug
+      ? `${debugLines.join("\n")}\n────────────\n${recommendation}`
+      : recommendation,
+    outfits,
+    prefScope,
+    advice: advice ?? undefined,
+  };
 }
 
 // ── 對外輔助函式 ──────────────────────────────────────────────────────────────
@@ -1012,7 +1340,7 @@ export function getSessionHistory(userId: string): ChatTurn[] | null {
  * 手動觸發偏好檔更新（供 test script、webhook 的「結束這次討論」等外部呼叫）。
  * 會讀取 sessionStore 中最後一筆該 userId 的 session（active 或 ended 皆可）。
  * @param userId    LINE userId 或 test 用的任意字串
- * @param provider  LLM provider（openrouter / anthropic / openai / rules）
+ * @param provider  LLM provider（anthropic / openai / rules）
  */
 export async function updateUserPreferenceFile(userId: string, provider: string): Promise<void> {
   await doUpdateUserPreference(userId, provider);

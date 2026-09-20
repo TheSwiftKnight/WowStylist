@@ -8,8 +8,8 @@
  *   npx tsx scripts/test-session.ts --batch  # 自動跑預設測試腳本後退出
  *
  * 環境變數（放在 .env.local，或直接 export）：
- *   CHAT_PROVIDER   = openrouter | anthropic | openai | rules
- *   OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
+ *   CHAT_PROVIDER   = anthropic | openai | rules
+ *   ANTHROPIC_API_KEY / OPENAI_API_KEY
  *   CHAT_MODEL      = （可選）覆蓋預設模型
  *   CHAT_DEBUG      = true  顯示詳細 debug 資訊
  *
@@ -44,6 +44,7 @@ import {
   endFashionSession,
   getSessionHistory,
   updateUserPreferenceFile,
+  writeOutfitAdvice,
 } from "../src/lib/chat";
 
 import readline from "readline";
@@ -70,7 +71,6 @@ function c(color: keyof typeof C, text: string): string {
 function getProvider(): string {
   const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
   if (explicit) return explicit;
-  if (process.env.OPENROUTER_API_KEY) return "openrouter";
   if (process.env.ANTHROPIC_API_KEY)  return "anthropic";
   if (process.env.OPENAI_API_KEY)     return "openai";
   return "rules";
@@ -147,7 +147,30 @@ async function sendMessage(userId: string, text: string): Promise<void> {
     const totalMs = Date.now() - startTs;
     console.log("");
     console.log(c("green", `${c("bold", "AI 回覆")} ${c("dim", `[總耗時 ${totalMs}ms]`)}：`));
-    console.log(answer);
+    console.log(answer.text);
+
+    // LINE 上會變成 Flex carousel；這裡用文字把卡片內容列出來對照
+    if (answer.outfits?.length) {
+      console.log("");
+      console.log(c("cyan", `${c("bold", "卡片")} ${c("dim", `(${answer.outfits.length} 張，偏好來源 ${answer.prefScope ?? "-"})`)}：`));
+      for (const o of answer.outfits) {
+        console.log(c("bold", `  第 ${o.index} 套 · ${o.styleZh}`));
+        for (const it of o.items) {
+          const price = it.priceTwd === null ? "—" : `NT$${Math.round(it.priceTwd)}`;
+          console.log(
+            `    ${it.slot.padEnd(6)} #${it.productId} ${it.title ?? "(無標題)"} ${price} ` +
+            c("dim", `score=${it.finalScore.toFixed(3)}`)
+          );
+          console.log(c("dim", `           ${it.productUrl ?? "(無連結)"}`));
+        }
+      }
+    }
+    if (answer.advice) {
+      console.log("");
+      console.log(c("magenta", `${c("bold", "穿搭建議")} ${c("dim", `(第 ${answer.advice.outfitIndex} 套，吻合度 ${answer.advice.matchScore.toFixed(3)}，來源：${answer.advice.sourceTitle ?? "—"})`)}：`));
+      const advice = await writeOutfitAdvice(answer.advice, getProvider());
+      console.log(advice ?? c("red", "（產生失敗，看上面的 log）"));
+    }
     console.log(c("dim", "─────────────────────────────────────────"));
 
   } catch (e) {

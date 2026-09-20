@@ -1,5 +1,5 @@
 /* ==========================================================================
-   WowStylist — Inspiration board
+   wOow — Inspiration board
    視覺語彙：釘在牆上的拼貼板。泛黃紙、壓花標本、打字機標籤、黃銅圖釘。
    ========================================================================== */
 
@@ -118,6 +118,8 @@ button {
 .board--fixed {
   height: 100dvh;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .board__inner,
@@ -249,13 +251,24 @@ button {
   border-bottom-color: var(--ink);
 }
 
+/* 各頁的標題列：大標在左，說明貼在右邊，統計／圖例再靠右。
+   三塊底線對齊，中間用一條細線隔開，像報紙的報頭。 */
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: clamp(16px, 2.6vw, 36px);
+  padding: 30px 0 16px;
+}
+
 .page-title {
   font-family: var(--display);
-  font-weight: 300;
-  font-size: clamp(34px, 5vw, 52px);
-  letter-spacing: 0.02em;
+  font-weight: 600;
+  font-size: clamp(44px, 6.2vw, 76px);
+  letter-spacing: 0.01em;
   margin: 0;
-  line-height: 1.05;
+  line-height: 1;
+  flex: 0 0 auto;
 }
 
 .page-title em {
@@ -266,10 +279,51 @@ button {
 .page-note {
   font-size: 14px;
   color: var(--ink-soft);
-  margin: 6px 0 0;
-  max-width: 54ch;
+  margin: 0;
+  max-width: 46ch;
   line-height: 1.75;
   text-wrap: pretty;
+}
+
+/* 在標題列裡時，說明文貼著大標右邊 */
+.page-head > .page-note {
+  flex: 1 1 260px;
+  padding-left: clamp(16px, 2.6vw, 34px);
+  padding-bottom: 0.42em;
+  border-left: 1px solid var(--thread);
+}
+
+.page-head__meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-bottom: 0.42em;
+  text-align: right;
+}
+
+/* 風向標整頁不捲動，標題要收斂一點，版面才留得住 */
+.page-head--tight {
+  padding: 16px 0 12px;
+}
+.page-head--tight .page-title {
+  font-size: clamp(38px, 4.6vw, 58px);
+}
+
+@media (max-width: 820px) {
+  /* 擠不下就把說明文換行到大標底下，線改成橫的 */
+  .page-head > .page-note {
+    flex-basis: 100%;
+    padding-left: 0;
+    padding-bottom: 0;
+    padding-top: 14px;
+    border-left: none;
+    border-top: 1px solid var(--thread);
+    max-width: 60ch;
+  }
+  .page-head__meta {
+    margin-left: 0;
+    text-align: left;
+    padding-bottom: 0;
+  }
 }
 
 .mock-flag {
@@ -292,21 +346,27 @@ button {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding: 56px 28px 72px;
+  padding: clamp(40px, 7vh, 72px) clamp(20px, 4vw, 40px) clamp(28px, 4vh, 40px);
 }
 
 .masthead {
   text-align: center;
-  margin-bottom: clamp(28px, 5vh, 56px);
+  margin-bottom: clamp(24px, 4.5vh, 52px);
+}
+
+/* 品牌名 wOow 的大小寫是識別的一部分，不跟著標籤一起轉大寫 */
+.brand {
+  text-transform: none;
 }
 
 .masthead__kicker {
   font-family: var(--typewriter);
   font-size: 11px;
   letter-spacing: 0.42em;
+  text-indent: 0.42em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  margin: 0 0 14px;
+  margin: 0 0 16px;
 }
 
 .masthead__title {
@@ -314,8 +374,11 @@ button {
   font-weight: 300;
   font-size: clamp(46px, 8vw, 92px);
   line-height: 0.95;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.012em;
   margin: 0;
+  /* 印在紙上的字：一點點墨色深淺，不是純黑 */
+  color: #2b251e;
+  text-shadow: 0 1px 0 rgba(255, 253, 247, 0.75);
 }
 
 .masthead__title em {
@@ -323,11 +386,38 @@ button {
   color: var(--moss);
 }
 
+/* 中間一顆小菱形的細花線 */
 .masthead__rule {
-  width: 132px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 20px auto 0;
+  width: min(210px, 62vw);
+}
+.masthead__rule span {
+  flex: 1;
   height: 1px;
-  margin: 22px auto 0;
-  background: linear-gradient(90deg, transparent, var(--thread), transparent);
+  background: linear-gradient(90deg, transparent, var(--thread));
+}
+.masthead__rule span:last-child {
+  background: linear-gradient(90deg, var(--thread), transparent);
+}
+.masthead__rule i {
+  width: 5px;
+  height: 5px;
+  background: var(--olive);
+  transform: rotate(45deg);
+  opacity: 0.8;
+}
+
+.masthead__lede {
+  margin: 16px auto 0;
+  max-width: 30em;
+  font-size: 13.5px;
+  line-height: 1.85;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
 }
 
 .entries {
@@ -337,65 +427,174 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: clamp(28px, 5vw, 72px);
+  gap: clamp(26px, 4.4vw, 68px);
   flex-wrap: wrap;
+  padding: 18px 0 8px;
 }
 
-/* 相框入口 */
+/* 相框入口 ------------------------------------------------------------- */
 .entry {
   position: relative;
   display: block;
-  width: 268px;
-  padding: 16px 16px 20px;
-  background: linear-gradient(168deg, #fdfbf6, #f2ead9);
+  width: 272px;
+  padding: 15px 15px 20px;
+  background:
+    linear-gradient(168deg, #fffdf8 0%, #f8f2e4 58%, #f1e9d8 100%);
   border: 1px solid var(--paper-edge);
-  box-shadow: var(--shadow-paper);
+  border-radius: 2px;
   text-decoration: none;
   color: var(--ink);
-  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.3, 1),
-    box-shadow 0.35s ease;
+  /* 紙的厚度：上緣一道亮邊、下緣一道暗邊，再加兩層落影 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(140, 128, 114, 0.18),
+    0 1px 1px rgba(36, 31, 26, 0.07),
+    0 8px 16px -10px rgba(36, 31, 26, 0.3),
+    0 26px 44px -26px rgba(36, 31, 26, 0.42);
+  transition:
+    transform 0.45s cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 0.45s ease,
+    border-color 0.45s ease;
+}
+/* 紙背後再墊一張，看起來像疊了兩層 */
+.entry::before {
+  content: "";
+  position: absolute;
+  inset: 6px -5px -7px 7px;
+  z-index: -1;
+  background: #f0e8d6;
+  border: 1px solid rgba(190, 178, 154, 0.5);
+  transform: rotate(1.4deg);
+  opacity: 0.55;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.3, 1),
+    opacity 0.45s ease;
 }
 .entry:nth-child(1) {
-  transform: rotate(-2.4deg);
+  transform: rotate(-2.2deg);
 }
 .entry:nth-child(2) {
-  transform: rotate(0.8deg) translateY(-18px);
+  transform: rotate(0.7deg) translateY(-20px);
 }
 .entry:nth-child(3) {
-  transform: rotate(2.1deg) translateY(8px);
+  transform: rotate(1.9deg) translateY(8px);
 }
+.entry:nth-child(2)::before {
+  transform: rotate(-1.6deg);
+}
+.entry:nth-child(3)::before {
+  transform: rotate(-1.1deg);
+}
+
 .entry:hover,
 .entry:focus-visible {
-  transform: rotate(0deg) translateY(-10px) scale(1.025);
-  box-shadow: var(--shadow-lift);
+  transform: rotate(0deg) translateY(-12px) scale(1.028);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(140, 128, 114, 0.2),
+    0 2px 4px rgba(36, 31, 26, 0.09),
+    0 18px 30px -16px rgba(36, 31, 26, 0.34),
+    0 44px 64px -34px rgba(36, 31, 26, 0.5);
   outline: none;
+}
+.entry:hover::before,
+.entry:focus-visible::before {
+  transform: rotate(2.6deg) translate(2px, 3px);
+  opacity: 0.7;
 }
 .entry:focus-visible {
   border-color: var(--moss);
 }
+.entry:active {
+  transform: rotate(0deg) translateY(-5px) scale(1.01);
+}
 
+/* 右上角的編號，像展品標號 */
+.entry__no {
+  position: absolute;
+  top: 13px;
+  right: 15px;
+  z-index: 2;
+  font-family: var(--typewriter);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: rgba(140, 128, 114, 0.85);
+}
+
+/* 畫心：卡紙裱框 + 內陷陰影 */
 .entry__plate {
   position: relative;
   aspect-ratio: 4 / 5;
   display: grid;
   place-items: center;
-  background:
-    radial-gradient(80% 70% at 50% 35%, rgba(255, 255, 255, 0.85), transparent 70%),
-    var(--plate, var(--paper-cool));
-  border: 1px solid rgba(190, 178, 154, 0.55);
   overflow: hidden;
+  background:
+    radial-gradient(82% 70% at 50% 32%, rgba(255, 255, 255, 0.88), transparent 72%),
+    var(--plate, var(--paper-cool));
+  border: 1px solid rgba(190, 178, 154, 0.6);
+  box-shadow:
+    inset 0 1px 6px rgba(78, 66, 52, 0.14),
+    inset 0 0 0 5px rgba(255, 253, 247, 0.55),
+    inset 0 0 0 6px rgba(190, 178, 154, 0.3);
 }
 .entry__plate svg {
-  width: 74%;
-  height: 74%;
+  width: 84%;
+  height: 84%;
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
+.entry:hover .entry__plate svg {
+  transform: scale(1.035);
+}
+/* 紙紋 + 四角的暈影，讓畫心不是一塊死色 */
 .entry__plate::after {
   content: "";
   position: absolute;
   inset: 0;
+  pointer-events: none;
   background-image: var(--grain);
   opacity: 0.2;
   mix-blend-mode: multiply;
+}
+.entry__plate::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 100% at 50% 40%,
+    transparent 52%,
+    rgba(86, 74, 58, 0.16) 100%
+  );
+}
+
+/* 畫心下緣的描圖紙條 */
+.entry__strip {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 7px 10px 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(251, 247, 238, 0.88),
+    rgba(251, 247, 238, 0.99)
+  );
+  border-top: 1px solid rgba(190, 178, 154, 0.55);
+  box-shadow: 0 -6px 10px -6px rgba(36, 31, 26, 0.18);
+  font-family: var(--typewriter);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-align: center;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry__strip--soon {
+  color: #7a4a1f;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
 }
 
 .entry__caption {
@@ -409,33 +608,112 @@ button {
   font-weight: 400;
   letter-spacing: 0.06em;
   margin: 0;
+  transition: color 0.3s ease;
+}
+.entry:hover .entry__name {
+  color: var(--moss);
 }
 
 .entry__sub {
   font-family: var(--typewriter);
-  font-size: 10.5px;
-  letter-spacing: 0.2em;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  margin: 8px 0 0;
+  margin: 9px 0 0;
 }
 
 .entry__meta {
+  position: relative;
   font-size: 12.5px;
   color: var(--ink-soft);
-  margin: 10px 0 0;
+  margin: 12px 0 0;
+  padding-top: 11px;
   line-height: 1.6;
 }
+/* 說明文上面一條短線，跟標題分層 */
+.entry__meta::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 26px;
+  height: 1px;
+  margin-left: -13px;
+  background: var(--thread);
+}
 
-.entry__soon {
-  display: inline-block;
-  margin-top: 10px;
+/* 頁腳 ----------------------------------------------------------------- */
+.wall__foot {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: clamp(24px, 4vh, 48px);
   font-family: var(--typewriter);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  color: #7a4a1f;
-  border: 1px solid rgba(169, 92, 42, 0.4);
-  padding: 3px 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.26em;
+  text-indent: 0.26em;
+  text-transform: uppercase;
+  color: rgba(140, 128, 114, 0.8);
+}
+.wall__foot i {
+  width: 4px;
+  height: 4px;
+  background: var(--thread);
+  transform: rotate(45deg);
+}
+
+/* 窄螢幕：三張紙改成直排，不要再歪 ------------------------------------- */
+@media (max-width: 900px) {
+  .entries {
+    gap: 30px;
+  }
+  .entry {
+    width: min(300px, 82vw);
+  }
+  .entry:nth-child(1),
+  .entry:nth-child(2),
+  .entry:nth-child(3) {
+    transform: rotate(0deg);
+  }
+  .entry:hover,
+  .entry:focus-visible {
+    transform: translateY(-8px) scale(1.015);
+  }
+  .entry::before {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .wall__inner {
+    padding: 34px 18px 28px;
+  }
+  .masthead__lede {
+    font-size: 12.5px;
+  }
+  .entries {
+    padding-top: 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entry,
+  .entry::before,
+  .entry__plate svg {
+    transition: none;
+  }
+  .entry:hover,
+  .entry:focus-visible {
+    transform: none;
+  }
+  .entry:hover .entry__plate svg {
+    transform: none;
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -447,6 +725,15 @@ button {
   inset: 0;
   z-index: 1;
   pointer-events: none;
+  /* 散件是背景，壓下來一點，讓三張入口是唯一的主角 */
+  opacity: 0.82;
+}
+
+@media (max-width: 900px) {
+  /* 窄螢幕沒有空間擺散件，全部收掉 */
+  .scatter {
+    display: none;
+  }
 }
 
 .deco {
@@ -618,15 +905,34 @@ button {
 /* 小紅書式 masonry。
    卡片是自家的單品圖（/api/garments/:id/image），不再是 IG 的 embed iframe，
    所以欄寬可以收窄，一排放得下更多件。 */
+/* 固定 4 欄。原本用 CSS multi-column 做 masonry，但欄高是瀏覽器分的，
+   卡片一增減整個版面就重排，看起來會晃；改成 grid 之後每格位置是固定的。 */
 .pinboard {
-  columns: 268px 5;
-  column-gap: clamp(16px, 2vw, 26px);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(26px, 3vw, 42px) clamp(16px, 2vw, 26px);
+  align-items: start;
+}
+
+@media (max-width: 1180px) {
+  .pinboard {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 860px) {
+  .pinboard {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .pinboard {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .pinned {
   position: relative;
-  break-inside: avoid;
-  margin: 0 0 clamp(26px, 3vw, 40px);
+  margin: 0;
   padding: 11px 11px 14px;
   background: linear-gradient(172deg, #fffdf7, #f4eee1);
   border: 1px solid var(--paper-edge);
@@ -650,11 +956,19 @@ button {
   background: var(--paper-cool);
   overflow: hidden;
 }
+/* 封面固定 3:4，不然每張卡會因為原圖比例不同而高低不齊 */
+.pinned__media {
+  aspect-ratio: 3 / 4;
+}
 .pinned__media img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
   filter: sepia(0.08) saturate(0.95);
+}
+.pinned__media .pinned__blank {
+  height: 100%;
 }
 
 /* 單品分類徽章（上衣 / 褲子） */
@@ -681,6 +995,13 @@ button {
   padding: 0;
 }
 
+/* 板子上的標籤只留一行，換行的就裁掉，卡片高度才齊 */
+.pinned__body .tag-row {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  height: 21px;
+}
+
 .tag-chip {
   font-family: var(--typewriter);
   font-size: 9.5px;
@@ -691,13 +1012,14 @@ button {
   border: 1px solid rgba(199, 189, 166, 0.6);
 }
 
-/* text_description 預設收成四行，點一下展開 */
+/* 板子上的 text_description 一律收成三行 —— 完整的在 peek 裡看。
+   固定行數同時讓同一列的卡片高度一致。 */
 .pinned__caption.is-clamped {
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  cursor: pointer;
+  min-height: calc(13.5px * 1.72 * 3);
 }
 
 /* outfit_tags：整體風格 */
@@ -986,19 +1308,11 @@ button {
    ========================================================================== */
 
 .compass {
-  height: 100dvh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0 clamp(16px, 4vw, 44px) 26px;
-}
-
-.compass__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 24px 0 14px;
 }
 
 .compass__legend {
@@ -1054,6 +1368,10 @@ button {
   background: var(--tag-fill, rgba(255, 255, 255, 0.6));
   color: var(--tag-ink, var(--ink));
   font-family: var(--display);
+  /* 一律同一個字級。以前是用權重換算字級（15~34px），
+     但標籤一多就變成大小雜亂的一團，比重也看不太出來；
+     現在比重只影響排序，大小統一反而好讀。 */
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.2;
   transition: transform 0.22s ease, box-shadow 0.22s ease;
@@ -1201,52 +1519,707 @@ button {
 }
 
 /* ==========================================================================
-   年度總結（先留白）
+   年度總結 —— 翻頁的小冊子
+   形式借 Spotify Wrapped 的 story（進度段、點兩側翻頁、一頁一件事），
+   但每一頁都是一張釘在板子上的紙，不是滿版霓虹。
    ========================================================================== */
 
-.yearly {
-  min-height: calc(100dvh - 120px);
-  display: grid;
-  place-items: center;
-  padding: 40px 24px 80px;
+.wrap {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px clamp(16px, 3vw, 32px) clamp(12px, 2vh, 22px);
 }
 
-.yearly__sheet {
+/* ---- 上面那排進度段 ---- */
+.wrap__progress {
+  display: flex;
+  gap: 5px;
+  width: min(620px, 92vw);
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.wrap__progress li {
+  flex: 1;
+}
+.wrap__seg {
+  display: block;
+  width: 100%;
+  height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  background: rgba(199, 189, 166, 0.55);
+  transition: background 0.35s ease;
+}
+/* 上下各留一塊透明的 hit area，3px 的線本身太難點 */
+.wrap__seg::after {
+  content: "";
+  display: block;
+  height: 16px;
+  margin-top: -6px;
+}
+.wrap__seg.is-on {
+  background: var(--moss);
+}
+.wrap__seg:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: 3px;
+}
+
+/* ---- 紙的舞台 ---- */
+.wrap__stage {
   position: relative;
-  width: min(760px, 100%);
-  aspect-ratio: 5 / 6;
-  max-height: 72dvh;
+  flex: 1;
+  min-height: 0;
   display: grid;
   place-items: center;
-  padding: 48px;
-  text-align: center;
-  background: linear-gradient(170deg, #fffdf7, #f2ebda);
-  border: 1px solid var(--paper-edge);
-  box-shadow: var(--shadow-paper);
+  perspective: 1400px;
 }
-.yearly__sheet::after {
+
+/* 左右兩側的翻頁感應區。中間 44% 留給內容，字還選得起來。 */
+.wrap__zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28%;
+  z-index: 4;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--display);
+  font-size: 34px;
+  color: var(--ink-faint);
+}
+.wrap__zone--prev {
+  left: 0;
+}
+.wrap__zone--next {
+  right: 0;
+}
+.wrap__zone::after {
+  display: block;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.wrap__zone--prev::after {
+  content: "‹";
+}
+.wrap__zone--next::after {
+  content: "›";
+}
+.wrap__zone:hover:not(:disabled)::after {
+  opacity: 0.55;
+}
+.wrap__zone:disabled {
+  cursor: default;
+}
+.wrap__zone:focus-visible {
+  outline: 1px dashed rgba(169, 92, 42, 0.5);
+  outline-offset: -8px;
+}
+
+/* ---- 一張紙 ---- */
+.wrap__sheet {
+  position: relative;
+  z-index: 2;
+  width: min(620px, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(30px, 5vh, 56px) clamp(26px, 5vw, 58px);
+  text-align: center;
+  background: linear-gradient(168deg, #fffdf7 0%, #f6efdf 58%, #f1e9d8 100%);
+  border: 1px solid var(--paper-edge);
+  box-shadow: var(--shadow-lift);
+  transform-style: preserve-3d;
+  animation: wrap-flip 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+/* 內框細線，沿用留白版那張紙的線腳 */
+.wrap__sheet::after {
   content: "";
   position: absolute;
-  inset: 22px;
-  border: 1px solid rgba(199, 189, 166, 0.5);
+  inset: 14px;
+  border: 1px solid rgba(199, 189, 166, 0.45);
   pointer-events: none;
 }
-
-.yearly__year {
-  font-family: var(--display);
-  font-weight: 300;
-  font-size: clamp(64px, 12vw, 128px);
-  line-height: 0.9;
-  color: var(--paper-edge);
-  margin: 0;
-  letter-spacing: 0.04em;
+.wrap__sheet[data-dir="-1"] {
+  animation-name: wrap-flip-back;
+}
+/* 最後一頁：紙抬到翻頁感應區上面。
+   紙身上有 transform（翻頁動畫），會自己開一個 stacking context，
+   所以結語那兩顆按鈕光靠自己的 z-index escape 不出來，只能整張紙抬。
+   反正翻到底了也沒有下一頁，中間點不動剛好是對的；
+   要回上一頁還有紙以外的感應區、← 鍵跟上面的進度段。 */
+.wrap__sheet[data-last="true"] {
+  z-index: 5;
 }
 
-.yearly__word {
-  font-family: var(--hand);
-  font-size: 24px;
+/* 貼在紙上的紙膠帶：斜貼在左上角，跟板子上其他紙一樣的手感 */
+.wrap__sheet > .tape {
+  top: -10px;
+  left: 50%;
+  margin-left: -39px;
+  transform: rotate(-2.5deg);
+}
+
+.wrap__body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(10px, 1.8vh, 20px);
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.wrap__body::-webkit-scrollbar {
+  display: none;
+}
+.wrap__body > * {
+  margin: 0;
+  flex: 0 0 auto;
+  animation: wrap-rise 0.55s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.wrap__body > *:nth-child(1) { animation-delay: 0.14s; }
+.wrap__body > *:nth-child(2) { animation-delay: 0.22s; }
+.wrap__body > *:nth-child(3) { animation-delay: 0.3s; }
+.wrap__body > *:nth-child(4) { animation-delay: 0.38s; }
+.wrap__body > *:nth-child(5) { animation-delay: 0.46s; }
+.wrap__body > *:nth-child(6) { animation-delay: 0.54s; }
+.wrap__body > *:nth-child(7) { animation-delay: 0.62s; }
+
+/* ---- 頁內的字級 ---- */
+
+/* 每頁最上面那行打字機小標，底下帶一條短線 */
+.wrap__kicker {
+  font-family: var(--typewriter);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
   color: var(--ink-faint);
-  margin: 18px 0 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--thread);
+}
+
+.wrap__lede {
+  font-size: clamp(13px, 1.5vh, 15px);
+  line-height: 1.85;
+  color: var(--ink-soft);
+  max-width: 34ch;
+  text-wrap: pretty;
+}
+.wrap__lede em {
+  font-style: normal;
+  color: var(--rust);
+  border-bottom: 1px solid rgba(169, 92, 42, 0.4);
+}
+
+.wrap__hand {
+  font-family: var(--hand);
+  font-size: clamp(18px, 2.4vh, 23px);
+  color: var(--slate-deep);
+  transform: rotate(-1.4deg);
+}
+
+/* 封面的年份，用留白版那個淡淡的灰米色 */
+.wrap__year {
+  font-family: var(--display);
+  font-weight: 300;
+  font-size: clamp(76px, 15vh, 148px);
+  line-height: 0.82;
+  letter-spacing: 0.04em;
+  color: var(--paper-edge);
+}
+.wrap__display {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(38px, 6.5vh, 64px);
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.wrap__display em {
+  font-style: italic;
+  color: var(--moss);
+}
+
+/* 大數字 */
+.wrap__huge {
+  font-family: var(--display);
+  font-weight: 300;
+  font-size: clamp(88px, 17vh, 166px);
+  line-height: 0.8;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 14px;
+}
+.wrap__unit {
+  font-family: var(--body);
+  font-size: clamp(14px, 1.7vh, 17px);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+}
+
+/* 上衣／褲子的比例條 */
+.wrap__split {
+  display: flex;
+  width: min(320px, 78%);
+  height: 9px;
+  overflow: hidden;
+  border: 1px solid var(--paper-edge);
+  background: var(--paper-warm);
+}
+.wrap__split i {
+  display: block;
+  animation: wrap-grow-x 0.7s cubic-bezier(0.2, 0.8, 0.3, 1) 0.5s both;
+  transform-origin: left center;
+}
+.wrap__split-top {
+  background: var(--olive);
+}
+.wrap__split-pants {
+  background: var(--slate);
+}
+.wrap__splitkey {
+  font-family: var(--typewriter);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+}
+
+.wrap__stats {
+  display: flex;
+  gap: clamp(26px, 6vw, 52px);
+  list-style: none;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--thread);
+}
+.wrap__stats li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wrap__stats b {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: clamp(30px, 4.6vh, 46px);
+  line-height: 1;
+}
+.wrap__stats span {
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+}
+
+/* ---- 十二個月的長條 ---- */
+.wrap__months {
+  display: flex;
+  align-items: flex-end;
+  gap: clamp(4px, 1.1vw, 9px);
+  width: 100%;
+  height: clamp(110px, 19vh, 180px);
+}
+.wrap__month {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.wrap__bar {
+  display: block;
+  min-height: 2px;
+  background: repeating-linear-gradient(
+      -45deg,
+      rgba(255, 253, 247, 0.32) 0 3px,
+      transparent 3px 6px
+    ),
+    var(--olive);
+  border: 1px solid rgba(111, 113, 54, 0.5);
+  transform-origin: bottom center;
+  animation: wrap-grow-y 0.6s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.wrap__bar.is-peak {
+  background: repeating-linear-gradient(
+      -45deg,
+      rgba(255, 253, 247, 0.32) 0 3px,
+      transparent 3px 6px
+    ),
+    var(--rust);
+  border-color: rgba(169, 92, 42, 0.6);
+}
+.wrap__month:nth-child(1) .wrap__bar { animation-delay: 0.44s; }
+.wrap__month:nth-child(2) .wrap__bar { animation-delay: 0.48s; }
+.wrap__month:nth-child(3) .wrap__bar { animation-delay: 0.52s; }
+.wrap__month:nth-child(4) .wrap__bar { animation-delay: 0.56s; }
+.wrap__month:nth-child(5) .wrap__bar { animation-delay: 0.6s; }
+.wrap__month:nth-child(6) .wrap__bar { animation-delay: 0.64s; }
+.wrap__month:nth-child(7) .wrap__bar { animation-delay: 0.68s; }
+.wrap__month:nth-child(8) .wrap__bar { animation-delay: 0.72s; }
+.wrap__month:nth-child(9) .wrap__bar { animation-delay: 0.76s; }
+.wrap__month:nth-child(10) .wrap__bar { animation-delay: 0.8s; }
+.wrap__month:nth-child(11) .wrap__bar { animation-delay: 0.84s; }
+.wrap__month:nth-child(12) .wrap__bar { animation-delay: 0.88s; }
+.wrap__monthno {
+  font-family: var(--typewriter);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+}
+
+/* ---- 風格排行榜 ---- */
+.wrap__rows {
+  width: 100%;
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(9px, 1.6vh, 16px);
+}
+.wrap__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 1.4fr auto;
+  align-items: center;
+  gap: clamp(8px, 1.6vw, 15px);
+  text-align: left;
+  padding-bottom: clamp(7px, 1.2vh, 13px);
+  border-bottom: 1px dotted rgba(199, 189, 166, 0.75);
+  animation: wrap-rise 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.wrap__rows li:nth-child(1) { animation-delay: 0.4s; }
+.wrap__rows li:nth-child(2) { animation-delay: 0.48s; }
+.wrap__rows li:nth-child(3) { animation-delay: 0.56s; }
+.wrap__rows li:nth-child(4) { animation-delay: 0.64s; }
+.wrap__rows li:nth-child(5) { animation-delay: 0.72s; }
+.wrap__rank {
+  font-family: var(--typewriter);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.wrap__rowlabel {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(21px, 3.3vh, 32px);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.wrap__row:first-child .wrap__rowlabel {
+  color: var(--moss);
+  font-style: italic;
+}
+.wrap__meter {
+  display: block;
+  height: 6px;
+  background: var(--paper-warm);
+  border: 1px solid var(--paper-edge);
+}
+.wrap__meter i {
+  display: block;
+  height: 100%;
+  background: var(--olive);
+  transform-origin: left center;
+  animation: wrap-grow-x 0.7s cubic-bezier(0.2, 0.8, 0.3, 1) 0.6s both;
+}
+.wrap__row:first-child .wrap__meter i {
+  background: var(--moss);
+}
+.wrap__pct {
+  font-family: var(--typewriter);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+/* ---- 色盤 ---- */
+.wrap__swatches {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(8px, 1.6vw, 14px);
+  width: 100%;
+  list-style: none;
+  padding: 0;
+}
+.wrap__swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: wrap-rise 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.wrap__swatches li:nth-child(1) { animation-delay: 0.38s; }
+.wrap__swatches li:nth-child(2) { animation-delay: 0.45s; }
+.wrap__swatches li:nth-child(3) { animation-delay: 0.52s; }
+.wrap__swatches li:nth-child(4) { animation-delay: 0.59s; }
+.wrap__swatches li:nth-child(5) { animation-delay: 0.66s; }
+.wrap__swatches li:nth-child(6) { animation-delay: 0.73s; }
+/* 色票本身：壓一層細網點，讓它像印在紙上而不是螢幕色塊 */
+.wrap__swatch i {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  padding: 8px 6px;
+  font-style: normal;
+  font-size: clamp(12px, 1.6vh, 15px);
+  letter-spacing: 0.04em;
+  border: 1px solid rgba(36, 31, 26, 0.16);
+  box-shadow: inset 0 0 0 4px rgba(255, 253, 247, 0.5),
+    0 1px 2px rgba(36, 31, 26, 0.14);
+  background-blend-mode: multiply;
+}
+.wrap__swatch span {
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+}
+
+/* ---- 形容詞 ---- */
+.wrap__moods {
+  width: 100%;
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(4px, 0.9vh, 10px);
+}
+.wrap__moods li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  animation: wrap-rise 0.55s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation-delay: calc(0.36s + var(--n) * 0.1s);
+}
+/* 越前面的字越大，排下來像一張遞減的字卡 */
+.wrap__moods em {
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 600;
+  line-height: 1.1;
+  font-size: calc(clamp(30px, 5.4vh, 54px) - var(--n) * 0.16 * clamp(30px, 5.4vh, 54px));
+  color: var(--clay);
+}
+.wrap__moods li:nth-child(n + 3) em {
+  color: var(--ink-soft);
+}
+.wrap__moods span {
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+}
+
+/* ---- 拼貼 ---- */
+.wrap__collage {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(8px, 1.6vw, 14px);
+  width: 100%;
+}
+/* 每張照片各自歪一點點，像一張張貼上去的 */
+.wrap__frame {
+  position: relative;
+  margin: 0;
+  aspect-ratio: 3 / 4;
+  padding: 5px 5px 16px;
+  background: #fffdf7;
+  border: 1px solid var(--paper-edge);
+  box-shadow: var(--shadow-paper);
+  transform: rotate(calc((var(--n) - 2.5) * 0.9deg));
+  animation: wrap-rise 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation-delay: calc(0.34s + var(--n) * 0.08s);
+}
+.wrap__frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: saturate(0.9) sepia(0.06);
+}
+.wrap__frame.is-blank {
+  display: grid;
+  place-items: center;
+  background: repeating-linear-gradient(
+      132deg,
+      rgba(199, 189, 166, 0.16) 0 6px,
+      transparent 6px 14px
+    ),
+    var(--paper-warm);
+}
+.wrap__frame.is-blank span {
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+}
+
+/* ---- 結語 ---- */
+.wrap__persona {
+  font-family: var(--display);
+  font-weight: 600;
+  font-style: italic;
+  font-size: clamp(50px, 9.5vh, 96px);
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--moss);
+}
+.wrap__closing {
+  font-size: clamp(13px, 1.5vh, 15px);
+  line-height: 1.9;
+  color: var(--ink-soft);
+  max-width: 32ch;
+  padding-top: 14px;
+  border-top: 1px solid var(--thread);
+  text-wrap: pretty;
+}
+.wrap__closing em {
+  font-style: normal;
+  color: var(--clay);
+  border-bottom: 1px solid rgba(184, 98, 60, 0.45);
+}
+.wrap__signoff {
+  font-family: var(--hand);
+  font-size: clamp(19px, 2.6vh, 26px);
+  color: var(--slate-deep);
+  transform: rotate(-1.2deg);
+}
+
+.wrap__actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  padding-top: clamp(14px, 2.4vh, 24px);
+  animation: wrap-rise 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) 0.7s both;
+}
+.wrap__actions .btn {
+  text-decoration: none;
+}
+
+/* 標籤還沒長出來時的那一行 */
+.wrap__blankline {
+  font-family: var(--hand);
+  font-size: clamp(22px, 3.4vh, 34px);
+  color: var(--ink-faint);
+  padding: clamp(20px, 5vh, 46px) 0;
+}
+
+/* ---- 頁腳 ---- */
+.wrap__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--typewriter);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+}
+
+/* ---- 動態 ---- */
+@keyframes wrap-flip {
+  from {
+    opacity: 0;
+    transform: rotateY(-20deg) translateX(6%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: rotateY(0) translateX(0) scale(1);
+  }
+}
+@keyframes wrap-flip-back {
+  from {
+    opacity: 0;
+    transform: rotateY(20deg) translateX(-6%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: rotateY(0) translateX(0) scale(1);
+  }
+}
+@keyframes wrap-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes wrap-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes wrap-grow-y {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* 矮螢幕／手機：整頁改成可以捲，紙不再硬吃滿高度 */
+@media (max-height: 700px), (max-width: 620px) {
+  .wrap {
+    min-height: calc(100dvh - 60px);
+  }
+  .wrap__stage {
+    align-items: stretch;
+  }
+  .wrap__sheet {
+    height: auto;
+    min-height: 100%;
+  }
+  /* 手機上左右兩側收窄，中間的字才不會整片被蓋住 */
+  .wrap__zone {
+    width: 20%;
+  }
+  .wrap__swatches,
+  .wrap__collage {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wrap__row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .wrap__row .wrap__meter {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wrap__sheet,
+  .wrap__body > *,
+  .wrap__row,
+  .wrap__swatch,
+  .wrap__moods li,
+  .wrap__frame,
+  .wrap__bar,
+  .wrap__split i,
+  .wrap__meter i,
+  .wrap__actions {
+    animation: none !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1265,4 +2238,355 @@ button {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ── Peek：Notion 式的置中放大 ─────────────────────────────
+   點卡片不在板子上撐開，而是把那張紙浮到畫面正中央。
+   刻意維持直式（portrait），讓它還是「一張釘在牆上的紙」而不是橫幅視窗。 */
+.peek {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 4vh, 48px) 16px;
+}
+
+.peek__scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  cursor: default;
+  background: rgba(36, 31, 26, 0.42);
+  backdrop-filter: blur(3px);
+  animation: peek-fade 0.18s ease both;
+}
+
+.peek__paper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 直式：寬度收窄、高度吃滿，維持接近 3:4 的紙張比例 */
+  width: min(452px, 100%);
+  max-height: min(92vh, calc(100vw * 1.28));
+  padding: 14px 14px 0;
+  background: linear-gradient(172deg, #fffdf7, #f4eee1);
+  border: 1px solid var(--paper-edge);
+  box-shadow: 0 2px 4px rgba(36, 31, 26, 0.12),
+    0 40px 80px -28px rgba(36, 31, 26, 0.55);
+  animation: peek-rise 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.peek__close {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: rgba(253, 250, 242, 0.85);
+  border: 1px solid var(--paper-edge);
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.peek__close:hover {
+  color: var(--ink);
+  background: #fffdf7;
+}
+
+.peek__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.peek__media {
+  position: relative;
+  background: var(--paper-cool);
+  overflow: hidden;
+}
+.peek__media img {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: sepia(0.08) saturate(0.95);
+}
+
+.peek__body {
+  padding: 16px 4px 18px;
+}
+
+.peek__title {
+  font-family: var(--display);
+  font-size: 27px;
+  line-height: 1.24;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 12px;
+}
+
+.peek__caption {
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--ink);
+  margin: 11px 0 0;
+  text-wrap: pretty;
+}
+.peek__caption.is-empty {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* 底部工具列釘在紙的下緣，捲動時不跟著跑 */
+.peek__foot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+  padding: 11px 4px 13px;
+  border-top: 1px solid rgba(199, 189, 166, 0.55);
+  background: linear-gradient(172deg, rgba(255, 253, 247, 0), #f4eee1 40%);
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+}
+
+@keyframes peek-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes peek-rise {
+  from { opacity: 0; transform: translateY(14px) scale(0.975); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .peek__scrim,
+  .peek__paper {
+    animation: none;
+  }
+}
+
+/* 卡片現在整張可點 */
+.pinned[role="button"] {
+  cursor: pointer;
+}
+
+/* 一張卡 = 一則貼文。底下墊兩層紙邊，暗示裡面不只一套。
+   用 box-shadow 疊而不是 ::before/::after —— .pinned 身上有 transform，
+   那會開一個 stacking context，裡面 z-index:-1 的偽元素會蓋在卡片自己的
+   底色上面而不是後面。box-shadow 本來就畫在背景後面，沒有這個問題。 */
+.pinned--stack {
+  box-shadow:
+    var(--shadow-paper),
+    4px 5px 0 -1px #fdfaf2,
+    4px 5px 0 0 var(--paper-edge),
+    8px 10px 0 -1px #f7f1e4,
+    8px 10px 0 0 var(--paper-edge);
+}
+.pinned--stack:hover {
+  box-shadow:
+    var(--shadow-lift),
+    6px 7px 0 -1px #fdfaf2,
+    6px 7px 0 0 var(--paper-edge),
+    12px 14px 0 -1px #f7f1e4,
+    12px 14px 0 0 var(--paper-edge);
+}
+
+/* 這則貼文有幾套 */
+.pinned__count {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  font-family: var(--typewriter);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  padding: 3px 8px;
+  color: var(--ink);
+  background: rgba(253, 250, 242, 0.92);
+  border: 1px solid var(--paper-edge);
+}
+
+.pinned__hint {
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--moss);
+}
+
+/* ── peek 的換頁列 ─────────────────────────────────────── */
+.peek__rail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-shrink: 0;
+  padding: 2px 34px 10px 4px;
+}
+
+.peek__counter {
+  font-family: var(--typewriter);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--ink-faint);
+  min-width: 72px;
+  text-align: center;
+}
+
+.peek__arrow {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: rgba(253, 250, 242, 0.9);
+  border: 1px solid var(--paper-edge);
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+}
+.peek__arrow:hover:not(:disabled) {
+  color: var(--ink);
+  background: #fffdf7;
+}
+.peek__arrow:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* 一套裡的單品並排。三件以上就縮小，不然每張都太窄。 */
+.peek__rack {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  background: var(--paper-cool);
+}
+.peek__rack[data-count="2"] {
+  grid-template-columns: 1fr 1fr;
+}
+.peek__rack[data-count="3"] {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.peek__slot {
+  position: relative;
+  overflow: hidden;
+  background: var(--paper-cool);
+}
+.peek__slot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: sepia(0.08) saturate(0.95);
+}
+/* 多件並排時裁成同高，版面才不會參差 */
+.peek__rack:not([data-count="1"]) .peek__slot {
+  aspect-ratio: 3 / 4;
+}
+
+/* 同一套裡每件單品各自一段 */
+.peek__item + .peek__item {
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px dashed rgba(199, 189, 166, 0.7);
+}
+
+.peek__item-head {
+  font-family: var(--typewriter);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--moss);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+/* 第幾套的點點 */
+.peek__dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 10px 4px 2px;
+}
+
+.peek__dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--thread);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+.peek__dot:hover {
+  background: var(--thread);
+}
+.peek__dot.is-on {
+  background: var(--moss);
+  border-color: var(--moss);
+  transform: scale(1.25);
+}
+
+
+/* ── 翻頁動畫 ───────────────────────────────────────────
+   換套時整頁重掛（key={safeIndex}），沿著紙的左／右邊翻進來，
+   像翻一本釘在牆上的本子。data-dir 決定往哪個方向翻。 */
+.peek__scroll {
+  perspective: 1500px;
+  perspective-origin: 50% 40%;
+}
+
+.peek__page {
+  transform-origin: left center;
+  animation: page-next 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+.peek__page[data-dir="-1"] {
+  transform-origin: right center;
+  animation-name: page-prev;
+}
+
+@keyframes page-next {
+  from {
+    opacity: 0;
+    transform: rotateY(-26deg) translateX(7%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: rotateY(0) translateX(0) scale(1);
+  }
+}
+
+@keyframes page-prev {
+  from {
+    opacity: 0;
+    transform: rotateY(26deg) translateX(-7%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: rotateY(0) translateX(0) scale(1);
+  }
+}
+
+/* 翻頁時紙面微微抬一下，像被掀起來 */
+.peek__paper {
+  transform-style: preserve-3d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .peek__page {
+    animation: peek-fade 0.15s ease both;
+  }
 }
