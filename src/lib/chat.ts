@@ -1,6 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
-import { loadUserPrefProfile } from "@/lib/prefs";
 import {
   loadStyleCandidates,
   loadCandidateProducts,
@@ -28,7 +27,8 @@ import {
 // 核心流程（LLM 模式）：
 //   1. 若輸入為問候 / 使用說明 → chatWithRules() 直接回傳
 //   2. 取得或開啟 session
-//      - 新 session：accumulatedRequest 以使用者偏好（RDS / 覆寫檔）初始化
+//      - 新 session：accumulatedRequest 以使用者偏好檔
+//        （data/user-prefs/<userId>.md）初始化
 //      - session 只在使用者傳「結束這次討論」或傳 IG 連結時結束，
 //        在那之前每一輪的輸入都會累積起來一起送進分析
 //   3. accumulatedRequest = accumulatedRequest + "\n\n" + 本次輸入
@@ -406,6 +406,24 @@ function chatWithRules(text: string): string {
     return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
   }
   return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
+}
+
+// ── 讀取使用者偏好檔 ──────────────────────────────────────────────────────────
+// data/user-prefs/<userId>.md —— 由 doUpdateUserPreference() 在使用者傳
+// 「結束這次討論」時寫入／更新（見本檔下方）。
+//
+// 注意：這裡讀的是「給 prompt 看的文字偏好」。rank.ts 另外有
+// loadUserPreferenceEmbeddings()，那個是算 S_user 用的向量，來源是 IG RDS，
+// 兩者互不影響。
+function loadUserPrefs(userId: string | null): string | null {
+  if (!userId) return null;
+  try {
+    const filePath = join(process.cwd(), "data", "user-prefs", `${userId}.md`);
+    const content = readFileSync(filePath, "utf-8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -875,27 +893,14 @@ export async function generateChatReply(
   }
 
   // ── 使用者偏好 ──────────────────────────────────────────────────────────────
-  // 偏好來自 IG RDS（使用者分享進來、pipeline 拆出來的單品），
-  // 不是本機檔案。詳見 src/lib/prefs.ts。
-  const prefProfile = await loadUserPrefProfile(userId);
-  const userPrefs = prefProfile.text;
-
-  if (prefProfile.scope === "file") {
-    console.log(`[chat] 使用者偏好：手寫覆寫檔 userId=${userId}`);
-    D(`ℹ️  使用者偏好：手寫覆寫檔（${userPrefs?.length ?? 0} chars）`);
-  } else if (prefProfile.scope === "user") {
-    console.log(
-      `[chat] 使用者偏好：本人收藏 ${prefProfile.garmentCount} 件 userId=${userId}`
-    );
-    D(`ℹ️  使用者偏好：你收藏的 ${prefProfile.garmentCount} 件單品`);
-  } else if (prefProfile.scope === "global") {
-    console.log(`[chat] 使用者偏好：全體收藏 ${prefProfile.garmentCount} 件`);
-    D(
-      `ℹ️  使用者偏好：你還沒有收藏，先用全體的 ` +
-      `${prefProfile.garmentCount} 件當參考`
-    );
+  // 來源是 data/user-prefs/<userId>.md，由上一次 session 結束時萃取寫入。
+  const userPrefs = loadUserPrefs(userId);
+  if (userPrefs) {
+    console.log(`[chat] 已載入使用者偏好檔 userId=${userId}（${userPrefs.length} chars）`);
+    D(`ℹ️  已載入使用者偏好檔（${userPrefs.length} chars）`);
   } else {
-    D(`ℹ️  無使用者偏好（資料庫裡還沒有任何 IG 單品，或連不上）`);
+    console.log(`[chat] 無使用者偏好檔 userId=${userId}（冷啟動）`);
+    D(`ℹ️  無使用者偏好檔（冷啟動）`);
   }
 
   // ── Session：取得現有的，沒有就開新的 ───────────────────────────────────────
