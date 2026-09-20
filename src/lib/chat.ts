@@ -692,9 +692,40 @@ async function searchCandidates(
 
 interface ScoredOutfit {
   items: CandidateItem[];
+  /** 明確分開上下身 —— Flex 卡片要分別放 like 按鈕跟商品連結 */
+  top: RankedProduct | null;
+  bottom: RankedProduct | null;
   score: number;
   reason: string;
 }
+
+/**
+ * 給 UI 用的推薦結果（不帶 embedding 那些重東西）。
+ * chat.ts 只負責算出這個；要變成 LINE Flex 卡片是 src/lib/flex.ts 的事。
+ */
+export type RecommendedItem = {
+  slot: "top" | "bottom";
+  productId: number;
+  title: string | null;
+  priceTwd: number | null;
+  productUrl: string | null;
+  finalScore: number;
+};
+
+export type RecommendedOutfit = {
+  /** 第幾套，從 1 開始 */
+  index: number;
+  styleZh: string;
+  items: RecommendedItem[];
+};
+
+/** generateChatReply 的回傳：純文字一定有，outfits 有推薦時才有。 */
+export type ChatReply = {
+  text: string;
+  outfits?: RecommendedOutfit[];
+  /** 偏好來源，webhook 想顯示提示時可用 */
+  prefScope?: "user" | "global" | "none";
+};
 
 async function scoreOutfits(
   searchResult: SearchResult,
@@ -739,6 +770,8 @@ async function scoreOutfits(
 
     outfits.push({
       items,
+      top: top ?? null,
+      bottom: bottom ?? null,
       score,
       reason: style.outfitText ?? style.styleZh ?? style.style,
     });
@@ -808,21 +841,38 @@ async function formatRecommendation(
 
 // ── 推薦主流程（串接三段 dummy） ─────────────────────────────────────────────
 // debug 模式時將各步驟說明 push 到 debugLines（由呼叫者傳入）
+/** ScoredOutfit → 給 UI 的精簡結構（丟掉 embedding 等內部欄位）。 */
+function toRecommendedOutfits(
+  scored: ScoredOutfit[],
+  styleZh: string
+): RecommendedOutfit[] {
+  return scored.map((o, i) => {
+    const items: RecommendedItem[] = [];
+    for (const [slot, p] of [["top", o.top], ["bottom", o.bottom]] as const) {
+      if (!p) continue;
+      items.push({
+        slot,
+        productId: p.productId,
+        title: p.title,
+        priceTwd: p.priceTwd,
+        productUrl: p.productUrl,
+        finalScore: p.finalScore,
+      });
+    }
+    return { index: i + 1, styleZh, items };
+  }).filter((o) => o.items.length > 0);
+}
+
 async function runRecommendation(
   classifiedResult: string,
   session: FashionSession,
   provider: string,
   debugLines?: string[]
-): Promise<string> {
+): Promise<{ text: string; outfits: RecommendedOutfit[]; prefScope: "user" | "global" | "none" }> {
   // Step A：搜尋候選服飾
   debugLines?.push("[4/6] 🔍 搜尋候選服飾（searchCandidates）...");
   const searchResult = await searchCandidates(classifiedResult, session);
   debugLines?.push(`      ↳ ${searchResult.debugSummary}`);
-  debugLines?.push(`      ↳ 各 layer 候選數：${
-    Object.entries(searchResult.candidatesByLayer)
-      .map(([k, v]) => `${k}=${v.length}`)
-      .join(", ")
-  }`);
 
   // Step B：評分排序
   debugLines?.push("[5/6] 📊 評分排序（scoreOutfits）...");
@@ -834,13 +884,18 @@ async function runRecommendation(
 
   // Step C：格式化
   debugLines?.push("[6/6] ✍️  格式化推薦結果（formatRecommendation）...");
-  const result = await formatRecommendation(
+  const text = await formatRecommendation(
     scoredOutfits, classifiedResult, session, provider, searchResult
   );
-  debugLines?.push("      ↳ 完成，準備回傳");
 
-  return result;
+  const styleZh =
+    searchResult.style?.styleZh ?? searchResult.style?.style ?? "推薦搭配";
+  const outfits = toRecommendedOutfits(scoredOutfits, styleZh);
+  debugLines?.push(`      ↳ 完成，${outfits.length} 套可以做成卡片`);
+
+  return { text, outfits, prefScope: searchResult.userPrefs.scope as "user" | "global" | "none" };
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 對外主函式
@@ -856,7 +911,7 @@ export async function generateChatReply(
     // 由 webhook 傳入 pushMessage(userId, msg)；不傳時靜默略過
     onProgress?: (msg: string) => Promise<void>;
   }
-): Promise<string> {
+): Promise<ChatReply> {
   const nonIgUrls = options?.nonIgUrls;
   const onProgress = options?.onProgress;
   const debug = process.env.CHAT_DEBUG === "true";
@@ -883,13 +938,13 @@ export async function generateChatReply(
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
-    return chatWithRules(text);
+    return { text: chatWithRules(text) };
   }
 
   // ── 問候 / 使用說明：不進 session，直接 rules 回應 ─────────────────────────
   if (isGreetingOrHowTo(text)) {
     console.log(`[chat] 問候/使用說明，直接 rules 回應`);
-    return chatWithRules(text);
+    return { text: chatWithRules(text) };
   }
 
   // ── 使用者偏好 ──────────────────────────────────────────────────────────────
@@ -948,7 +1003,7 @@ export async function generateChatReply(
     console.warn(`[chat] 分類器無回應（${classifyReason}），降級到 rules`);
     const errDetail = debug ? `\n原因：${classifyReason}` : "";
     await onProgress?.(`❌ 分析失敗，降級到關鍵字模式${errDetail}`);
-    return chatWithRules(text);
+    return { text: chatWithRules(text) };
   }
 
   const intent = parseIntent(classifiedResult);
@@ -958,7 +1013,9 @@ export async function generateChatReply(
   // ── 意圖不明：問清楚，不污染累積需求 ──────────────────────────────────────
   if (intent === "other") {
     // 不更新 accumulatedRequest（本次輸入不納入累積），也不記錄 turn
-    return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
+    return {
+      text: "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？",
+    };
   }
 
   // ── A / B / C：確認累積需求，記錄 turn ────────────────────────────────────
@@ -971,7 +1028,7 @@ export async function generateChatReply(
   // 撈出候選商品後由 rank.ts 算分，最後才格式化成使用者看到的推薦。
   await onProgress?.("🔍 抓到適合的風格了，正在從商品庫挑搭配...");
 
-  const recommendation = await runRecommendation(
+  const { text: recommendation, outfits, prefScope } = await runRecommendation(
     classifiedResult,
     session,
     provider,
@@ -979,12 +1036,17 @@ export async function generateChatReply(
   );
 
   appendTurn(session, { role: "assistant", content: recommendation, timestamp: Date.now() });
-  console.log(`[chat] 完成 sessionId=${session.sessionId} 總 turns=${session.turns.length}`);
+  console.log(
+    `[chat] 完成 sessionId=${session.sessionId} 總 turns=${session.turns.length} 套數=${outfits.length}`
+  );
 
-  if (debug) {
-    return `${debugLines.join("\n")}\n────────────\n${recommendation}`;
-  }
-  return recommendation;
+  return {
+    text: debug
+      ? `${debugLines.join("\n")}\n────────────\n${recommendation}`
+      : recommendation,
+    outfits,
+    prefScope,
+  };
 }
 
 // ── 對外輔助函式 ──────────────────────────────────────────────────────────────

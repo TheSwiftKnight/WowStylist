@@ -5,6 +5,8 @@ import { extractAnyUrls } from "@/lib/url";
 import { requestIngest, warmUp } from "@/lib/pipeline";
 import { createFailedJob } from "@/lib/jobs";
 import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "@/lib/chat";
+import { buildOutfitCarousel, siteUrl, type FlexMessage } from "@/lib/flex";
+import { likeProduct } from "@/lib/likes";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
@@ -38,11 +40,13 @@ export const dynamic = "force-dynamic";
 // Vercel 預設的 function 上限比這短，所以放寬。
 export const maxDuration = 60;
 
-type LineTextMessageEvent = {
+type LineEvent = {
   type: string;
   replyToken?: string;
   source?: { type: string; userId?: string };
   message?: { type: string; text?: string };
+  /** 使用者按下 Flex 卡片上的按鈕時會帶這個 */
+  postback?: { data?: string };
 };
 
 function verifySignature(rawBody: string, signature: string | null): boolean {
@@ -108,7 +112,8 @@ async function replyText(replyToken: string, text: string): Promise<void> {
 
 // Push API：用 userId，可以任何時候傳，用於背景進度推送
 // 注意：LINE 免費方案每月 500 則，使用時請注意用量
-async function pushMessage(userId: string, text: string): Promise<void> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function pushRaw(userId: string, messages: any[]): Promise<void> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token) {
     console.error("[webhook] 沒有 LINE_CHANNEL_ACCESS_TOKEN，無法 push");
@@ -121,10 +126,7 @@ async function pushMessage(userId: string, text: string): Promise<void> {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        to: userId,
-        messages: [{ type: "text", text }],
-      }),
+      body: JSON.stringify({ to: userId, messages }),
     });
     if (!res.ok) {
       console.error(
@@ -139,6 +141,22 @@ async function pushMessage(userId: string, text: string): Promise<void> {
   }
 }
 
+async function pushMessage(userId: string, text: string): Promise<void> {
+  await pushRaw(userId, [{ type: "text", text }]);
+}
+
+/** 送 Flex carousel。LINE 一次最多 5 則訊息。 */
+async function pushFlex(
+  userId: string,
+  flex: FlexMessage,
+  leadingText?: string
+): Promise<void> {
+  const messages = leadingText
+    ? [{ type: "text", text: leadingText }, flex]
+    : [flex];
+  await pushRaw(userId, messages);
+}
+
 export async function POST(req: Request) {
   // 一定要用「原始字串」驗簽章，先 json() 再 stringify 會驗不過
   const rawBody = await req.text();
@@ -151,7 +169,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
-  const body = JSON.parse(rawBody) as { events?: LineTextMessageEvent[] };
+  const body = JSON.parse(rawBody) as { events?: LineEvent[] };
   const events = body.events ?? [];
   console.log(
     `[webhook] 收到 ${events.length} 個事件:`,
@@ -159,6 +177,52 @@ export async function POST(req: Request) {
   );
 
   for (const event of events) {
+    // ── postback：Flex 卡片上的「♡ 收藏」 ────────────────────────
+    // data 格式：action=like&pid=<product_id>&slot=top|bottom
+    if (event.type === "postback") {
+      const params = new URLSearchParams(event.postback?.data ?? "");
+      const uid = event.source?.userId ?? null;
+
+      if (params.get("action") !== "like" || !uid) {
+        console.warn(`[webhook] 看不懂的 postback：${event.postback?.data}`);
+        continue;
+      }
+
+      const pid = params.get("pid") ?? "";
+      const slotLabel = params.get("slot") === "bottom" ? "下著" : "上衣";
+
+      // 先回一則，讓使用者馬上看到有反應（replyToken 幾秒就過期）
+      if (event.replyToken) {
+        await replyText(event.replyToken, `♡ 收到，正在把這件${slotLabel}加進你的偏好...`);
+      }
+
+      after(async () => {
+        const senderName = await getSenderName(uid);
+        const result = await likeProduct(uid, pid, { senderName });
+
+        if (!result.ok) {
+          console.error(`[webhook] 按讚失敗 product=${pid}: ${result.reason}`);
+          await pushMessage(
+            uid,
+            process.env.CHAT_DEBUG === "true"
+              ? `❌ 收藏失敗：${result.reason.slice(0, 300)}`
+              : "收藏沒成功，等一下再試試 🙏"
+          );
+          return;
+        }
+
+        const name = result.title ? `「${result.title}」` : `這件${slotLabel}`;
+        await pushMessage(
+          uid,
+          result.created
+            ? `已收藏 ${name} ✅\n之後推薦會更偏向這種風格。`
+            : `${name} 你已經收藏過了 👍`
+        );
+      });
+
+      continue;
+    }
+
     if (event.type !== "message" || event.message?.type !== "text") continue;
 
     const text = event.message.text ?? "";
@@ -272,14 +336,35 @@ export async function POST(req: Request) {
           : undefined;
 
         // 執行完整穿搭流程
-        const answer = await generateChatReply(capturedUserId, capturedText, {
+        const reply = await generateChatReply(capturedUserId, capturedText, {
           nonIgUrls: capturedNonIgUrls.length > 0 ? capturedNonIgUrls : undefined,
           onProgress,
         });
 
-        // 推送最終推薦結果
-        if (capturedUserId) {
-          await pushMessage(capturedUserId, answer);
+        if (!capturedUserId) return;
+
+        // 有推薦 → Flex carousel（橫向滑動、可點連結、可按讚）
+        // 沒推薦或組不出卡片 → 退回純文字，使用者至少看得到原因
+        const flex = reply.outfits ? buildOutfitCarousel(reply.outfits) : null;
+
+        if (flex) {
+          const note =
+            reply.prefScope === "user"
+              ? "幫你挑了這幾套 ✨（已參考你收藏的單品，左右滑動看看）"
+              : reply.prefScope === "global"
+                ? "幫你挑了這幾套 ✨（你還沒有收藏，先用大家的當參考 —— 按 ♡ 收藏會更準）"
+                : "幫你挑了這幾套 ✨（左右滑動瀏覽，按 ♡ 收藏會讓下次更準）";
+
+          await pushFlex(capturedUserId, flex, note);
+
+          if (process.env.CHAT_DEBUG === "true") {
+            await pushMessage(capturedUserId, reply.text.slice(0, 4900));
+          }
+        } else {
+          if (!siteUrl() && reply.outfits?.length) {
+            console.warn("[webhook] SITE_URL 沒設，卡片會沒有圖");
+          }
+          await pushMessage(capturedUserId, reply.text.slice(0, 4900));
         }
 
       } catch (e) {

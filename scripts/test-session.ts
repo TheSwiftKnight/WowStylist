@@ -147,7 +147,24 @@ async function sendMessage(userId: string, text: string): Promise<void> {
     const totalMs = Date.now() - startTs;
     console.log("");
     console.log(c("green", `${c("bold", "AI 回覆")} ${c("dim", `[總耗時 ${totalMs}ms]`)}：`));
-    console.log(answer);
+    console.log(answer.text);
+
+    // LINE 上會變成 Flex carousel；這裡用文字把卡片內容列出來對照
+    if (answer.outfits?.length) {
+      console.log("");
+      console.log(c("cyan", `${c("bold", "卡片")} ${c("dim", `(${answer.outfits.length} 張，偏好來源 ${answer.prefScope ?? "-"})`)}：`));
+      for (const o of answer.outfits) {
+        console.log(c("bold", `  第 ${o.index} 套 · ${o.styleZh}`));
+        for (const it of o.items) {
+          const price = it.priceTwd === null ? "—" : `NT$${Math.round(it.priceTwd)}`;
+          console.log(
+            `    ${it.slot.padEnd(6)} #${it.productId} ${it.title ?? "(無標題)"} ${price} ` +
+            c("dim", `score=${it.finalScore.toFixed(3)}`)
+          );
+          console.log(c("dim", `           ${it.productUrl ?? "(無連結)"}`));
+        }
+      }
+    }
     console.log(c("dim", "─────────────────────────────────────────"));
 
   } catch (e) {
