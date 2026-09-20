@@ -34,7 +34,7 @@ npm i cheerio json5
 # 抽取層 — 預設就是這個
 OPENROUTER_API_KEY=sk-or-v1-...
 KB_LLM_PROVIDER=openrouter                # 預設值，可省略
-KB_EXTRACT_MODEL=                         # 空 = nvidia/nemotron-3-ultra-550b-a55b:free
+KB_EXTRACT_MODEL=                         # 空 = deepseek/deepseek-v4-flash-0731:free
 
 # 搜尋層（三選一，Exa 最推薦：一個 call 搜尋+內文）
 EXA_API_KEY=...        # $7/1k 次，註冊送 $20 + 每月 $10

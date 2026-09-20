@@ -298,9 +298,8 @@ export async function POST(req: Request) {
         const capturedUid = userId;
         after(async () => {
           const p = process.env.CHAT_PROVIDER ||
-            (process.env.OPENROUTER_API_KEY ? "openrouter" :
-             process.env.ANTHROPIC_API_KEY  ? "anthropic"  :
-             process.env.OPENAI_API_KEY     ? "openai"     : "rules");
+            (process.env.ANTHROPIC_API_KEY ? "anthropic" :
+             process.env.OPENAI_API_KEY    ? "openai"    : "rules");
           await updateUserPreferenceFile(capturedUid, p);
           await pushMessage(capturedUid, "偏好已更新 💾");
         });

@@ -19,8 +19,9 @@ import {
 // 穿搭對話核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
-//   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY，預設 nvidia/nemotron-3-ultra-550b-a55b:free）
-//   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY）
+//   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY，預設 claude-haiku-4-5-20251001）★ 預設
+//                    原本這裡是 OpenRouter 的 Nemotron，已整個換成 Claude；
+//                    兩邊 API 的差異寫在下面 callAnthropic 上方。
 //   - "openai"     : OpenAI API（需 OPENAI_API_KEY）
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
@@ -187,43 +188,74 @@ const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根�
 // LLM 回傳結果，content=null 時 reason 說明失敗原因
 type LLMResult = { content: string; reason: string } | { content: null; reason: string };
 
-// ── LLM 呼叫：OpenRouter ─────────────────────────────────────────────────────
-async function callOpenRouter(
+// ── LLM 呼叫：Claude（Anthropic Messages API）──────────────────────────────
+//
+// 跟先前用的 OpenRouter / Nemotron（OpenAI 相容格式）幾個關鍵差異：
+//
+//   1. 端點與認證
+//        OpenAI 相容：POST /chat/completions，Authorization: Bearer <key>
+//        Claude：      POST /v1/messages，x-api-key: <key> + anthropic-version
+//   2. system prompt
+//        OpenAI 相容：塞進 messages[0]，role="system"
+//        Claude：      是 body 最上層的 `system` 欄位，不進 messages
+//   3. max_tokens
+//        Claude 是**必填**，漏了直接 400
+//   4. 回應形狀
+//        OpenAI 相容：choices[0].message.content（字串，有些模型給 chunk 陣列）
+//        Claude：      content[] 是 block 陣列，文字在 type==="text" 的 .text，
+//                      而且可能不只一塊，要全部接起來
+//   5. 截斷判斷
+//        OpenAI 相容：choices[0].finish_reason === "length"
+//        Claude：      stop_reason === "max_tokens"
+//   6. 錯誤格式
+//        Claude 用 HTTP 狀態碼 + { type:"error", error:{ type, message } }；
+//        不像 OpenRouter 會拿 HTTP 200 包一個 error 物件回來，所以不用再多檢查一層
+//   7. temperature 範圍 0~1（OpenAI 是 0~2），而且沒有 reasoning / reasoning_effort
+//
+// 這裡刻意不做重試：整條流程跑在 webhook 的 after() 背景裡，時間預算很緊
+// （見 route.ts 的說明），寧可把失敗原因講清楚，讓上層降級到 rules。
+
+/** 最快也最便宜；分類這種照表填欄位的工作夠用。要更準可設 CHAT_MODEL=claude-sonnet-5。 */
+const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+
+function claudeModel(): string {
+  return process.env.CHAT_MODEL || DEFAULT_CLAUDE_MODEL;
+}
+
+async function callAnthropic(
   systemPrompt: string,
   userMessage: string,
   maxTokens = 400
 ): Promise<LLMResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    const reason = "NO_API_KEY: OPENROUTER_API_KEY 未設定";
+    const reason = "NO_API_KEY: ANTHROPIC_API_KEY 未設定";
     console.error(`[chat] ${reason}`);
     return { content: null, reason };
   }
 
-  const model = process.env.CHAT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
-  const timeoutMs = 8000;
+  const model = claudeModel();
+  const timeoutMs = Number(process.env.CHAT_TIMEOUT_MS || 8000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
 
   try {
-    console.log(`[chat] OpenRouter 送出請求 model=${model} timeout=${timeoutMs}ms`);
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    console.log(`[chat] Claude 送出請求 model=${model} timeout=${timeoutMs}ms`);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.SITE_URL ?? "https://wowstylist.app",
-        "X-Title": "WowStylist",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
         model,
-        max_tokens: maxTokens,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
-        ],
+        max_tokens: maxTokens,   // Claude 必填
+        temperature: 0,          // 分類要穩定，不要發散
+        system: systemPrompt,    // 最上層欄位，不是 messages[0]
+        messages: [{ role: "user", content: userMessage }],
       }),
     });
     clearTimeout(timer);
@@ -231,54 +263,54 @@ async function callOpenRouter(
 
     if (!res.ok) {
       const body = await res.text();
-      const reason = `HTTP_${res.status} (${elapsed}ms): ${body.slice(0, 300)}`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      let detail = body.slice(0, 300);
+      try {
+        const parsed = JSON.parse(body) as { error?: { type?: string; message?: string } };
+        if (parsed.error) detail = `${parsed.error.type}: ${parsed.error.message}`;
+      } catch { /* 不是 JSON 就用原文 */ }
+
+      const hint =
+        res.status === 401 ? "（金鑰不對或沒權限）"
+        : res.status === 404 ? `（模型名稱可能有誤：${model}）`
+        : res.status === 429 ? "（rate limit 或額度用完）"
+        : res.status === 529 ? "（Anthropic 端過載，稍後再試）"
+        : "";
+
+      const reason = `HTTP_${res.status} (${elapsed}ms)${hint}: ${detail}`;
+      console.error(`[chat] Claude ${reason} model=${model}`);
       return { content: null, reason };
     }
 
     const data = (await res.json()) as {
-      choices?: {
-        finish_reason?: string;
-        message?: { content?: string | { text?: string }[] };
-      }[];
-      error?: { message?: string; code?: number };
+      content?: { type: string; text?: string }[];
+      stop_reason?: string;
+      usage?: { input_tokens?: number; output_tokens?: number };
     };
 
-    if (data.error) {
-      const reason = `API_ERROR code=${data.error.code}: ${data.error.message}`;
-      console.error(`[chat] OpenRouter ${reason} (${elapsed}ms) model=${model}`);
+    if (data.stop_reason === "max_tokens") {
+      const reason = `TRUNCATED stop_reason=max_tokens (${elapsed}ms) — 調高 maxTokens`;
+      console.error(`[chat] Claude ${reason} model=${model}`);
       return { content: null, reason };
     }
 
-    const choice = data.choices?.[0];
-    const msg = choice?.message;
-
-    if (choice?.finish_reason === "length") {
-      const reason = `TRUNCATED finish_reason=length (${elapsed}ms) — 考慮換小模型或降低 maxTokens`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    if (!msg) {
-      const raw = JSON.stringify(data).slice(0, 200);
-      const reason = `EMPTY_CHOICES (${elapsed}ms) raw=${raw}`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    const rawContent = msg.content;
-    const content = Array.isArray(rawContent)
-      ? rawContent.map((c) => (typeof c === "object" && c !== null ? (c.text ?? "") : String(c))).join("")
-      : rawContent ?? null;
+    // content 是 block 陣列，文字可能被切成好幾塊
+    const content = (data.content ?? [])
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "")
+      .join("")
+      .trim();
 
     if (!content) {
-      const raw = JSON.stringify(msg).slice(0, 200);
-      const reason = `EMPTY_CONTENT (${elapsed}ms) finish=${choice?.finish_reason} msg=${raw}`;
-      console.error(`[chat] OpenRouter ${reason} model=${model}`);
+      const raw = JSON.stringify(data).slice(0, 200);
+      const reason = `EMPTY_CONTENT (${elapsed}ms) stop_reason=${data.stop_reason} raw=${raw}`;
+      console.error(`[chat] Claude ${reason} model=${model}`);
       return { content: null, reason };
     }
 
-    console.log(`[chat] OpenRouter 回應成功 (${elapsed}ms) finish_reason=${choice?.finish_reason}`);
+    console.log(
+      `[chat] Claude 回應成功 (${elapsed}ms) stop_reason=${data.stop_reason} ` +
+      `tokens=${data.usage?.input_tokens ?? "?"}/${data.usage?.output_tokens ?? "?"}`
+    );
     return { content, reason: "ok" };
 
   } catch (e: unknown) {
@@ -286,49 +318,14 @@ async function callOpenRouter(
     const elapsed = Date.now() - startedAt;
     let reason: string;
     if (e instanceof Error && e.name === "AbortError") {
-      reason = `TIMEOUT >${elapsed}ms — 考慮換小模型：CHAT_MODEL=meta-llama/llama-3.1-8b-instruct:free`;
+      reason = `TIMEOUT >${elapsed}ms — 可調 CHAT_TIMEOUT_MS，或換更快的模型`;
     } else if (e instanceof TypeError) {
       reason = `NETWORK_ERROR (${elapsed}ms): ${e.message}`;
     } else {
       reason = `UNKNOWN_ERROR (${elapsed}ms): ${String(e)}`;
     }
-    console.error(`[chat] OpenRouter ${reason} model=${model}`);
+    console.error(`[chat] Claude ${reason} model=${claudeModel()}`);
     return { content: null, reason };
-  }
-}
-
-// ── LLM 呼叫：Anthropic ──────────────────────────────────────────────────────
-async function callAnthropic(
-  systemPrompt: string,
-  userMessage: string,
-  maxTokens = 400
-): Promise<string | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: process.env.CHAT_MODEL || "claude-haiku-4-5",
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userMessage }],
-      }),
-    });
-    if (!res.ok) {
-      console.error(`[chat] Anthropic HTTP ${res.status}:`, await res.text());
-      return null;
-    }
-    const data = (await res.json()) as { content?: { type: string; text?: string }[] };
-    return data.content?.find((c) => c.type === "text")?.text ?? null;
-  } catch (e) {
-    console.error("[chat] Anthropic 錯誤:", e);
-    return null;
   }
 }
 
@@ -377,11 +374,7 @@ async function callLLM(
   userMessage: string,
   maxTokens = 400
 ): Promise<LLMResult> {
-  if (provider === "openrouter") return callOpenRouter(systemPrompt, userMessage, maxTokens);
-  if (provider === "anthropic") {
-    const content = await callAnthropic(systemPrompt, userMessage, maxTokens);
-    return content ? { content, reason: "ok" } : { content: null, reason: "ANTHROPIC_NO_RESPONSE" };
-  }
+  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens);
   if (provider === "openai") {
     const content = await callOpenAI(systemPrompt, userMessage, maxTokens);
     return content ? { content, reason: "ok" } : { content: null, reason: "OPENAI_NO_RESPONSE" };
@@ -922,13 +915,11 @@ export async function generateChatReply(
 
   const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
   const provider = explicit ||
-    (process.env.OPENROUTER_API_KEY ? "openrouter" :
-     process.env.ANTHROPIC_API_KEY  ? "anthropic"  :
-     process.env.OPENAI_API_KEY     ? "openai"     : "rules");
+    (process.env.ANTHROPIC_API_KEY ? "anthropic" :
+     process.env.OPENAI_API_KEY    ? "openai"    : "rules");
   const model = process.env.CHAT_MODEL ||
-    (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
-     provider === "anthropic"  ? "claude-haiku-4-5" :
-     provider === "openai"     ? "gpt-4o-mini" : "-");
+    (provider === "anthropic" ? DEFAULT_CLAUDE_MODEL :
+     provider === "openai"    ? "gpt-4o-mini" : "-");
 
   if (debug) {
     await onProgress?.(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
@@ -1074,7 +1065,7 @@ export function getSessionHistory(userId: string): ChatTurn[] | null {
  * 手動觸發偏好檔更新（供 test script、webhook 的「結束這次討論」等外部呼叫）。
  * 會讀取 sessionStore 中最後一筆該 userId 的 session（active 或 ended 皆可）。
  * @param userId    LINE userId 或 test 用的任意字串
- * @param provider  LLM provider（openrouter / anthropic / openai / rules）
+ * @param provider  LLM provider（anthropic / openai / rules）
  */
 export async function updateUserPreferenceFile(userId: string, provider: string): Promise<void> {
   await doUpdateUserPreference(userId, provider);

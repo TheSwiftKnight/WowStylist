@@ -8,8 +8,8 @@
  *   npx tsx scripts/test-session.ts --batch  # 自動跑預設測試腳本後退出
  *
  * 環境變數（放在 .env.local，或直接 export）：
- *   CHAT_PROVIDER   = openrouter | anthropic | openai | rules
- *   OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
+ *   CHAT_PROVIDER   = anthropic | openai | rules
+ *   ANTHROPIC_API_KEY / OPENAI_API_KEY
  *   CHAT_MODEL      = （可選）覆蓋預設模型
  *   CHAT_DEBUG      = true  顯示詳細 debug 資訊
  *
@@ -70,7 +70,6 @@ function c(color: keyof typeof C, text: string): string {
 function getProvider(): string {
   const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
   if (explicit) return explicit;
-  if (process.env.OPENROUTER_API_KEY) return "openrouter";
   if (process.env.ANTHROPIC_API_KEY)  return "anthropic";
   if (process.env.OPENAI_API_KEY)     return "openai";
   return "rules";

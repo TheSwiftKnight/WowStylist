@@ -56,7 +56,7 @@ function itemRow(item: RecommendedItem): FlexNode {
       height: "sm",
       action: {
         type: "postback",
-        label: "♡ 收藏",
+        label: "♡",
         // postback data 上限 300 字元，只放必要的
         data: `action=like&pid=${item.productId}&slot=${item.slot}`,
         displayText: `收藏這件${SLOT_LABEL[item.slot]}`,
@@ -69,7 +69,7 @@ function itemRow(item: RecommendedItem): FlexNode {
       type: "button",
       style: "link",
       height: "sm",
-      action: { type: "uri", label: "看商品", uri: item.productUrl },
+      action: { type: "uri", label: "🔗", uri: item.productUrl },
     });
   }
 
