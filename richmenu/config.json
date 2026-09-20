@@ -6,15 +6,15 @@
   "areas": [
     {
       "bounds": { "x": 0, "y": 0, "width": 833, "height": 843 },
-      "action": { "type": "uri", "uri": "{SITE_URL}" }
+      "action": { "type": "uri", "label": "收藏夾", "uri": "{SITE_URL}/favorites" }
     },
     {
       "bounds": { "x": 833, "y": 0, "width": 834, "height": 843 },
-      "action": { "type": "message", "text": "怎麼用" }
+      "action": { "type": "uri", "label": "style 風向標", "uri": "{SITE_URL}/compass" }
     },
     {
       "bounds": { "x": 1667, "y": 0, "width": 833, "height": 843 },
-      "action": { "type": "message", "text": "嗨！" }
+      "action": { "type": "uri", "label": "年度總結", "uri": "{SITE_URL}/yearly" }
     }
   ]
 }

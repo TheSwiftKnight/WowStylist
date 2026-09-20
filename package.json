@@ -14,6 +14,7 @@
     "db:show": "cd pipeline && ./py -m fashion_retrieval.show",
     "ig": "cd pipeline && ./py -m fashion_retrieval.pipeline",
     "richmenu": "node scripts/richmenu.mjs",
+    "richmenu:art": "node scripts/richmenu-art.mjs",
     "kb:crawl": "node scripts/style-kb/crawl.mjs",
     "kb:crawl:dry": "node scripts/style-kb/crawl.mjs --dry",
     "kb:report": "node scripts/style-kb/report.mjs",
