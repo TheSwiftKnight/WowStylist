@@ -44,6 +44,7 @@ import {
   endFashionSession,
   getSessionHistory,
   updateUserPreferenceFile,
+  writeOutfitAdvice,
 } from "../src/lib/chat";
 
 import readline from "readline";
@@ -163,6 +164,12 @@ async function sendMessage(userId: string, text: string): Promise<void> {
           console.log(c("dim", `           ${it.productUrl ?? "(無連結)"}`));
         }
       }
+    }
+    if (answer.advice) {
+      console.log("");
+      console.log(c("magenta", `${c("bold", "穿搭建議")} ${c("dim", `(第 ${answer.advice.outfitIndex} 套，吻合度 ${answer.advice.matchScore.toFixed(3)}，來源：${answer.advice.sourceTitle ?? "—"})`)}：`));
+      const advice = await writeOutfitAdvice(answer.advice, getProvider());
+      console.log(advice ?? c("red", "（產生失敗，看上面的 log）"));
     }
     console.log(c("dim", "─────────────────────────────────────────"));
 

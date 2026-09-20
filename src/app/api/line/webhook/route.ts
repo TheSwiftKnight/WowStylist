@@ -4,7 +4,7 @@ import { extractIgLinks } from "@/lib/ig";
 import { extractAnyUrls } from "@/lib/url";
 import { requestIngest, warmUp } from "@/lib/pipeline";
 import { createFailedJob } from "@/lib/jobs";
-import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "@/lib/chat";
+import { generateChatReply, endFashionSession, updateUserPreferenceFile, writeOutfitAdvice } from "@/lib/chat";
 import { buildOutfitCarousel, siteUrl, type FlexMessage } from "@/lib/flex";
 import { likeProduct } from "@/lib/likes";
 
@@ -355,6 +355,21 @@ export async function POST(req: Request) {
                 : "幫你挑了這幾套 ✨（左右滑動瀏覽，按 ♡ 收藏會讓下次更準）";
 
           await pushFlex(capturedUserId, flex, note);
+
+          // 卡片先送出去，再花一次 LLM 往返寫那段穿搭建議。
+          // 順序很重要：建議失敗或逾時的話，使用者至少已經看到三套卡片了。
+          if (reply.advice) {
+            const provider = process.env.CHAT_PROVIDER ||
+              (process.env.ANTHROPIC_API_KEY ? "anthropic" :
+               process.env.OPENAI_API_KEY    ? "openai"    : "rules");
+            const advice = await writeOutfitAdvice(reply.advice, provider);
+            if (advice) {
+              await pushMessage(
+                capturedUserId,
+                `💡 第 ${reply.advice.outfitIndex} 套的搭配建議\n\n${advice}`
+              );
+            }
+          }
 
           if (process.env.CHAT_DEBUG === "true") {
             await pushMessage(capturedUserId, reply.text.slice(0, 4900));

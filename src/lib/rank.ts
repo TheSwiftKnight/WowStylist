@@ -116,11 +116,66 @@ type StyleRecord = {
   style: string;
   style_zh?: string;
   outfit_text?: string;
+  embed_text?: string;
+  source_title?: string;
+  source_url?: string;
+  do?: string[];
   items?: {
-    top?: { matches?: StyleMatch[] };
-    bottom?: { matches?: StyleMatch[] };
+    top?: { description?: string; matches?: StyleMatch[] };
+    bottom?: { description?: string; matches?: StyleMatch[] };
   };
 };
+
+/**
+ * 一筆「搭配建議」＝ style_kb.jsonl 的一行。
+ *
+ * loadStyleCandidates() 會把同一個風格的所有記錄合併成一個候選池再排序，
+ * 所以推薦出來的三套其實是跨記錄配對的，do / embed_text / source_title
+ * 在那一步就被丟掉了。要寫穿搭建議就得拿回這些欄位，並且知道每個
+ * product_id 是從哪一筆建議來的（matches），才能把「這套」對回「那段建議」。
+ */
+export type StyleSuggestion = {
+  style: string;
+  styleZh: string | null;
+  outfitText: string | null;
+  embedText: string | null;
+  sourceTitle: string | null;
+  sourceUrl: string | null;
+  dos: string[];
+  topDescription: string | null;
+  bottomDescription: string | null;
+  /** product_id → 這筆建議裡的相似度分數 */
+  topMatches: Map<number, number>;
+  bottomMatches: Map<number, number>;
+};
+
+function toMatchMap(list: StyleMatch[] | undefined): Map<number, number> {
+  const m = new Map<number, number>();
+  for (const x of list ?? []) {
+    const id = Number(x?.product_id);
+    const score = Number(x?.score);
+    if (Number.isFinite(id) && Number.isFinite(score)) m.set(id, score);
+  }
+  return m;
+}
+
+/** 拿一個風格底下「每一筆」搭配建議（不合併）。 */
+export function loadStyleSuggestions(styleName: string): StyleSuggestion[] {
+  const records = loadKb().get(styleName.trim().toLowerCase()) ?? [];
+  return records.map((r) => ({
+    style: r.style,
+    styleZh: r.style_zh ?? null,
+    outfitText: r.outfit_text ?? null,
+    embedText: r.embed_text ?? null,
+    sourceTitle: r.source_title ?? null,
+    sourceUrl: r.source_url ?? null,
+    dos: Array.isArray(r.do) ? r.do.filter((x) => typeof x === "string") : [],
+    topDescription: r.items?.top?.description ?? null,
+    bottomDescription: r.items?.bottom?.description ?? null,
+    topMatches: toMatchMap(r.items?.top?.matches),
+    bottomMatches: toMatchMap(r.items?.bottom?.matches),
+  }));
+}
 
 let kbCache: Map<string, StyleRecord[]> | null = null;
 
@@ -328,6 +383,8 @@ type ProductSource = {
   hasTitle: boolean;
   hasPrice: boolean;
   hasUrl: boolean;
+  /** 有沒有 Claude 寫的文字描述（寫穿搭建議時要用） */
+  hasDescription: boolean;
   /** 這張表的 bottom 叫什麼：'bottom' 或 'pants' */
   bottomCategory: string;
   /** 商品是在自己那台 RDS，還是跟 IG 共用一台 */
@@ -377,6 +434,7 @@ export async function resolveProductSource(): Promise<ProductSource | null> {
         hasTitle: products.has("title"),
         hasPrice: products.has("price_twd"),
         hasUrl: products.has("product_url"),
+        hasDescription: products.has("text_description"),
         bottomCategory: "bottom",
         database,
       };
@@ -400,6 +458,7 @@ export async function resolveProductSource(): Promise<ProductSource | null> {
             hasTitle: unified.has("title"),
             hasPrice: unified.has("price_twd"),
             hasUrl: unified.has("product_url"),
+            hasDescription: unified.has("text_description"),
             bottomCategory: "pants",
             database: "ig",
           };
@@ -478,6 +537,62 @@ export async function loadCandidateProducts(
   }
 
   return result;
+}
+
+/**
+ * 撈這幾件商品的文字描述（寫穿搭建議時要餵給 LLM）。
+ *
+ * 跟 loadCandidateProducts 分開是因為那支會一起撈 embedding（一筆 1024 個 float），
+ * 這裡只要文字，而且只查最後選中的那兩件。
+ * 商品表沒有 text_description 欄位時退回 title，再沒有就跳過。
+ */
+export async function loadProductDescriptions(
+  productIds: number[]
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (productIds.length === 0) return out;
+
+  const source = await resolveProductSource();
+  if (!source) return out;
+
+  const descCol = source.hasDescription
+    ? "text_description"
+    : source.hasTitle
+      ? "title"
+      : null;
+
+  if (!descCol) {
+    console.warn("[rank] 商品表既沒有 text_description 也沒有 title，寫不出穿搭建議");
+    return out;
+  }
+  if (!source.hasDescription) {
+    console.warn(`[rank] ${source.table} 沒有 text_description，改用 title 當商品描述`);
+  }
+
+  const params: unknown[] = [productIds.map(String)];
+  let where = `WHERE ${source.idColumn}::text = ANY($1)`;
+  if (source.sourceFilter) {
+    params.push(source.sourceFilter);
+    where += ` AND source = $${params.length}`;
+  }
+
+  const run = source.database === "products" ? queryProducts : query;
+
+  try {
+    const rows = await run<{ product_id: string | number; description: string | null }>(
+      `SELECT ${source.idColumn} AS product_id, ${descCol} AS description
+         FROM ${source.table} ${where}`,
+      params
+    );
+    for (const row of rows) {
+      const text = (row.description ?? "").trim();
+      if (text) out.set(Number(row.product_id), text);
+    }
+  } catch (err) {
+    console.warn("[rank] 撈商品描述失敗：", err);
+  }
+
+  return out;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

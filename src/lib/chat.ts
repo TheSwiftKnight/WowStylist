@@ -13,7 +13,10 @@ import {
   type StyleCandidates,
   type StyleMatch,
   type Product,
+  loadStyleSuggestions,
+  loadProductDescriptions,
   type RankedProduct,
+  type StyleSuggestion,
 } from "@/lib/rank";
 
 // 穿搭對話核心模組。
@@ -225,7 +228,8 @@ function claudeModel(): string {
 async function callAnthropic(
   systemPrompt: string,
   userMessage: string,
-  maxTokens = 400
+  maxTokens = 400,
+  temperature = 0
 ): Promise<LLMResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -253,7 +257,7 @@ async function callAnthropic(
       body: JSON.stringify({
         model,
         max_tokens: maxTokens,   // Claude 必填
-        temperature: 0,          // 分類要穩定，不要發散
+        temperature,             // 分類用 0；寫建議時會調高一點
         system: systemPrompt,    // 最上層欄位，不是 messages[0]
         messages: [{ role: "user", content: userMessage }],
       }),
@@ -405,9 +409,10 @@ async function callLLM(
   provider: string,
   systemPrompt: string,
   userMessage: string,
-  maxTokens = 400
+  maxTokens = 400,
+  temperature = 0
 ): Promise<LLMResult> {
-  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens);
+  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens, temperature);
   if (provider === "openai") {
     const content = await callOpenAI(systemPrompt, userMessage, maxTokens);
     return content ? { content, reason: "ok" } : { content: null, reason: "OPENAI_NO_RESPONSE" };
@@ -562,6 +567,8 @@ interface SearchResult {
   debugSummary: string;
   // ── 以下是接上 rank.ts 之後新增的 ──
   style: StyleCandidates | null;
+  /** 這個風格底下的每一筆搭配建議（沒被 loadStyleCandidates 合併掉的原始資料） */
+  suggestions: StyleSuggestion[];
   products: Map<number, Product>;
   userPrefs: { top: number[][]; bottom: number[][]; scope: string };
   error: string | null;
@@ -578,6 +585,7 @@ function emptySearchResult(
     queryEmbedding: null,
     debugSummary,
     style: null,
+    suggestions: [],
     products: new Map(),
     userPrefs: { top: [], bottom: [], scope: "none" },
     error,
@@ -692,6 +700,7 @@ async function searchCandidates(
       queryEmbedding,
       debugSummary: debugParts.join(" | "),
       style,
+      suggestions: loadStyleSuggestions(style.style),
       products,
       userPrefs: {
         top: topPrefs.embeddings,
@@ -749,6 +758,8 @@ export type RecommendedOutfit = {
 export type ChatReply = {
   text: string;
   outfits?: RecommendedOutfit[];
+  /** 卡片送出去之後，拿這個去呼叫 writeOutfitAdvice() 產生那段穿搭建議 */
+  advice?: AdviceContext;
   /** 偏好來源，webhook 想顯示提示時可用 */
   prefScope?: "user" | "global" | "none";
 };
@@ -867,6 +878,173 @@ async function formatRecommendation(
 
 // ── 推薦主流程（串接三段 dummy） ─────────────────────────────────────────────
 // debug 模式時將各步驟說明 push 到 debugLines（由呼叫者傳入）
+// ══════════════════════════════════════════════════════════════════════════════
+// 穿搭建議（推薦之後再補一段話）
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 三套是從同一個風格底下好幾筆「搭配建議」的候選池混合排序出來的
+// （見 rank.ts 的 loadStyleCandidates / mergeMatches），所以要先把每一套
+// 對回它最可能來自的那一筆建議，再挑「商品跟建議描述最吻合」的那一套來寫。
+
+/** 寫建議需要的全部素材。 */
+export type AdviceContext = {
+  outfitIndex: number;
+  styleZh: string;
+  /** 來源建議 */
+  sourceTitle: string | null;
+  dos: string[];
+  embedText: string | null;
+  suggestedTop: string | null;
+  suggestedBottom: string | null;
+  /** 實際挑中的商品 */
+  pickedTop: { title: string | null; description: string | null } | null;
+  pickedBottom: { title: string | null; description: string | null } | null;
+  /** 使用者這次的需求（原句 + 分類器抽出的關鍵字） */
+  userQuery: string;
+  /** 對應強度，debug 用 */
+  matchScore: number;
+};
+
+/**
+ * 把每一套對回最可能的來源建議，回傳「最吻合」的那一組。
+ *
+ * 吻合度 = 這套的上身在該建議 matches 裡的分數 + 下身的分數。
+ * 兩件都出現在同一筆建議裡的話再加權 —— 那代表這筆建議本來就提議這個組合，
+ * 而不是剛好各自命中。
+ */
+function pickBestSuggestion(
+  scored: ScoredOutfit[],
+  suggestions: StyleSuggestion[]
+): { outfitIdx: number; suggestion: StyleSuggestion; score: number } | null {
+  if (scored.length === 0 || suggestions.length === 0) return null;
+
+  let best: { outfitIdx: number; suggestion: StyleSuggestion; score: number } | null = null;
+
+  scored.forEach((outfit, idx) => {
+    const topId = outfit.top?.productId;
+    const bottomId = outfit.bottom?.productId;
+
+    for (const sug of suggestions) {
+      const t = topId !== undefined ? (sug.topMatches.get(topId) ?? 0) : 0;
+      const b = bottomId !== undefined ? (sug.bottomMatches.get(bottomId) ?? 0) : 0;
+      if (t === 0 && b === 0) continue;
+
+      // 兩件都來自同一筆建議 → 這筆建議本來就在講這個組合
+      const bothBonus = t > 0 && b > 0 ? 1.5 : 1;
+      const score = (t + b) * bothBonus;
+
+      if (!best || score > best.score) best = { outfitIdx: idx, suggestion: sug, score };
+    }
+  });
+
+  // 一筆都對不上（KB 還沒跑 build_style_lookup 之類）→ 拿第一套配第一筆有內容的建議
+  if (!best) {
+    const fallback = suggestions.find((x) => x.dos.length > 0 || x.embedText);
+    if (!fallback) return null;
+    return { outfitIdx: 0, suggestion: fallback, score: 0 };
+  }
+
+  return best;
+}
+
+/** 分類器輸出裡把使用者原句跟 keywords 挑出來，不要整包標籤都丟給 LLM。 */
+function summariseQuery(classifiedResult: string, rawText: string): string {
+  const keywords = classifiedResult.match(/\[keywords:\s*([^\]]+)\]/i)?.[1]?.trim();
+  const item = classifiedResult.match(/\[item:\s*([^\]]+)\]/i)?.[1]?.trim();
+  return [
+    rawText.trim(),
+    item ? `已有的單品：${item}` : null,
+    keywords ? `需求關鍵字：${keywords}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+async function buildAdviceContext(
+  scored: ScoredOutfit[],
+  searchResult: SearchResult,
+  classifiedResult: string,
+  rawText: string
+): Promise<AdviceContext | null> {
+  const picked = pickBestSuggestion(scored, searchResult.suggestions);
+  if (!picked) return null;
+
+  const outfit = scored[picked.outfitIdx];
+  const ids = [outfit.top?.productId, outfit.bottom?.productId]
+    .filter((x): x is number => typeof x === "number");
+  const descriptions = await loadProductDescriptions(ids);
+
+  const pick = (p: RankedProduct | null) =>
+    p ? { title: p.title, description: descriptions.get(p.productId) ?? null } : null;
+
+  return {
+    outfitIndex: picked.outfitIdx + 1,
+    styleZh: searchResult.style?.styleZh ?? searchResult.style?.style ?? "這個風格",
+    sourceTitle: picked.suggestion.sourceTitle,
+    dos: picked.suggestion.dos,
+    embedText: picked.suggestion.embedText,
+    suggestedTop: picked.suggestion.topDescription,
+    suggestedBottom: picked.suggestion.bottomDescription,
+    pickedTop: pick(outfit.top),
+    pickedBottom: pick(outfit.bottom),
+    userQuery: summariseQuery(classifiedResult, rawText),
+    matchScore: picked.score,
+  };
+}
+
+const ADVICE_SYSTEM_PROMPT = `你是 WowStylist 的穿搭顧問，要為使用者剛拿到的一套搭配寫一段建議。
+
+寫作規則：
+- 繁體中文，100~150 字，**一段連貫的話**，不要分行、不要條列、不要用 emoji
+- 開頭點出這套為什麼符合他這次的需求（要具體回扣他說的場合／風格／限制，不要空泛地說「很適合你」）
+- 中間自然地融入至少一條「搭配要訣」的內容，用你自己的話講，不要照抄
+- 結尾給一個能提升精緻度或時尚度的具體做法（例如比例、配件、材質、露出的長度）
+- 只能根據提供的商品描述講，不要編造顏色、材質、品牌等沒寫到的細節
+- 不要提到分數、資料庫、系統、來源文章標題這些東西，像一個造型師在說話
+
+只輸出那段建議本身，不要任何前言或標題。`;
+
+function buildAdviceMessage(ctx: AdviceContext): string {
+  return [
+    `【使用者這次的需求】\n${ctx.userQuery}`,
+    `【風格】${ctx.styleZh}`,
+    ctx.dos.length ? `【這套的搭配要訣】\n${ctx.dos.map((d) => `- ${d}`).join("\n")}` : null,
+    ctx.embedText ? `【搭配摘要】\n${ctx.embedText}` : null,
+    ctx.suggestedTop ? `【建議的上身】${ctx.suggestedTop}` : null,
+    ctx.suggestedBottom ? `【建議的下身】${ctx.suggestedBottom}` : null,
+    ctx.pickedTop
+      ? `【實際挑到的上身】${ctx.pickedTop.title ?? "(無標題)"}${ctx.pickedTop.description ? ` —— ${ctx.pickedTop.description}` : ""}`
+      : null,
+    ctx.pickedBottom
+      ? `【實際挑到的下身】${ctx.pickedBottom.title ?? "(無標題)"}${ctx.pickedBottom.description ? ` —— ${ctx.pickedBottom.description}` : ""}`
+      : null,
+  ].filter(Boolean).join("\n\n");
+}
+
+/**
+ * 寫那段穿搭建議。
+ *
+ * 由 webhook 在「卡片已經送出去之後」才呼叫 —— 這樣多一次 LLM 往返也不會
+ * 拖到使用者看到推薦的時間，失敗了就只是少一段話，卡片照樣在。
+ */
+export async function writeOutfitAdvice(
+  ctx: AdviceContext,
+  provider: string
+): Promise<string | null> {
+  const { content, reason } = await callLLM(
+    provider,
+    ADVICE_SYSTEM_PROMPT,
+    buildAdviceMessage(ctx),
+    500,
+    0.6, // 建議要讀起來像人話，不要像分類器
+  );
+
+  if (!content) {
+    console.warn(`[chat] 穿搭建議產生失敗（${reason}）`);
+    return null;
+  }
+  console.log(`[chat] 穿搭建議完成，對應第 ${ctx.outfitIndex} 套（吻合度 ${ctx.matchScore.toFixed(3)}）`);
+  return content.trim();
+}
+
 /** ScoredOutfit → 給 UI 的精簡結構（丟掉 embedding 等內部欄位）。 */
 function toRecommendedOutfits(
   scored: ScoredOutfit[],
@@ -893,8 +1071,14 @@ async function runRecommendation(
   classifiedResult: string,
   session: FashionSession,
   provider: string,
+  rawText: string,
   debugLines?: string[]
-): Promise<{ text: string; outfits: RecommendedOutfit[]; prefScope: "user" | "global" | "none" }> {
+): Promise<{
+  text: string;
+  outfits: RecommendedOutfit[];
+  prefScope: "user" | "global" | "none";
+  advice: AdviceContext | null;
+}> {
   // Step A：搜尋候選服飾
   debugLines?.push("[4/6] 🔍 搜尋候選服飾（searchCandidates）...");
   const searchResult = await searchCandidates(classifiedResult, session);
@@ -919,7 +1103,20 @@ async function runRecommendation(
   const outfits = toRecommendedOutfits(scoredOutfits, styleZh);
   debugLines?.push(`      ↳ 完成，${outfits.length} 套可以做成卡片`);
 
-  return { text, outfits, prefScope: searchResult.userPrefs.scope as "user" | "global" | "none" };
+  // 挑一套來寫建議（只準備素材，LLM 呼叫留到卡片送出去之後）
+  const advice = await buildAdviceContext(scoredOutfits, searchResult, classifiedResult, rawText);
+  debugLines?.push(
+    advice
+      ? `      ↳ 建議對應第 ${advice.outfitIndex} 套（吻合度 ${advice.matchScore.toFixed(3)}，來源：${advice.sourceTitle ?? "—"}）`
+      : "      ↳ 對不到任何一筆搭配建議，這次不寫建議"
+  );
+
+  return {
+    text,
+    outfits,
+    prefScope: searchResult.userPrefs.scope as "user" | "global" | "none",
+    advice,
+  };
 }
 
 
@@ -1049,10 +1246,11 @@ export async function generateChatReply(
   // 撈出候選商品後由 rank.ts 算分，最後才格式化成使用者看到的推薦。
   await onProgress?.("🔍 抓到適合的風格了，正在從商品庫挑搭配...");
 
-  const { text: recommendation, outfits, prefScope } = await runRecommendation(
+  const { text: recommendation, outfits, prefScope, advice } = await runRecommendation(
     classifiedResult,
     session,
     provider,
+    text,
     debug ? debugLines : undefined
   );
 
@@ -1067,6 +1265,7 @@ export async function generateChatReply(
       : recommendation,
     outfits,
     prefScope,
+    advice: advice ?? undefined,
   };
 }
 
