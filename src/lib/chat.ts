@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
 // 打字對話的核心模組。
@@ -10,20 +10,22 @@ import { join } from "path";
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
 // 核心流程（LLM 模式）：
-//   Phase 1：LLM 分類意圖（A/B/C）→ 抽取標籤
-//   Phase 2：Session 決策（僅 B/C）→ 開新 session 或繼續現有 session
+//   Phase 1：LLM 分類意圖（A/B/C）→ 抽取標籤 → 即時 push 分類結果
+//   Phase 2：Session 決策（僅 B/C）→ 開新 session 或繼續現有 session → 即時 push 決策
 //   Phase 3：記錄使用者 turn
 //   Phase 4：runRecommendation → searchCandidates → scoreOutfits → formatRecommendation
-//   Phase 5：記錄 assistant turn，回傳結果
+//            每個子步驟完成後即時 push 進度
+//   Phase 5：記錄 assistant turn，回傳結果（由 webhook push 給使用者）
 //
 // 意圖類型：
 //   A：找「一件特定單品」，給限制條件，不需要搭配
 //   B：已有「一件指定衣物」，找可以互相搭配的其他衣物
 //   C：針對「場合/情境」，找完整一套穿搭，沒有指定衣物
 //
-// DEBUG 模式（CHAT_DEBUG=true）：
-//   LINE Bot 回傳訊息會包含逐步驟的執行狀態，方便測試整體流程正確性。
-//   格式：[步驟/總步驟] emoji 說明 \n ... \n ──────── \n 實際結果
+// 即時回饋機制（onProgress callback）：
+//   generateChatReply 接受 options.onProgress?: (msg: string) => Promise<void>
+//   webhook 傳入 pushMessage 作為 onProgress，每個 phase 完成後立刻推送進度給 LINE 使用者
+//   不傳 onProgress 時（例如直接測試），靜默略過 push。
 
 // ── 型別定義 ──────────────────────────────────────────────────────────────────
 
@@ -500,52 +502,49 @@ async function searchCandidates(
   _session: FashionSession
 ): Promise<SearchResult> {
   // ── TODO：替換以下 dummy 實作 ──────────────────────────────────────────────
+  // 解析標籤（顯示用）
   const keywordsMatch = classifiedResult.match(/\[keywords:\s*([^\]]+)\]/i);
-  const itemMatch     = classifiedResult.match(/\[item:\s*([^\]]+)\]/i);
-  const styleMatch    = classifiedResult.match(/\[風格:\s*([^\]]+)\]/);
-  const priceMatch    = classifiedResult.match(/\[price:\s*([^\]]+)\]/i);
+  const itemMatch = classifiedResult.match(/\[item:\s*([^\]]+)\]/i);
+  const styleMatch = classifiedResult.match(/\[風格:\s*([^\]]+)\]/i);
+  const priceMatch = classifiedResult.match(/\[price:\s*([^\]]+)\]/i);
 
   const keywords = keywordsMatch?.[1]?.trim() ?? "(未解析到)";
-  const item     = itemMatch?.[1]?.trim()     ?? null;
-  const style    = styleMatch?.[1]?.trim()    ?? null;
-  const price    = priceMatch?.[1]?.trim()    ?? null;
+  const item = itemMatch?.[1]?.trim() ?? null;
+  const style = styleMatch?.[1]?.trim() ?? null;
+  const price = priceMatch?.[1]?.trim() ?? null;
 
-  const debugSummary = [
-    `keywords: ${keywords}`,
-    item  ? `item: ${item}`   : null,
-    style ? `style: ${style}` : null,
-    price ? `price: ${price}` : null,
-  ].filter(Boolean).join(" | ");
+  const summaryParts = [`keywords: ${keywords}`];
+  if (item) summaryParts.push(`item: ${item}`);
+  if (style) summaryParts.push(`風格: ${style}`);
+  if (price) summaryParts.push(`price: ${price}`);
+
+  const debugSummary = summaryParts.join(" | ");
 
   console.log(`[chat] searchCandidates (dummy) ${debugSummary}`);
 
   return {
-    candidatesByLayer: { top: [], bottom: [], outer: [], footwear: [] },
+    candidatesByLayer: {}, // dummy：各 layer 均為空陣列
     queryEmbedding: null,
     debugSummary,
   };
   // ── TODO 結束 ───────────────────────────────────────────────────────────────
 }
 
-// ── 評分與排序（TODO：實作 Beam Search + 三分項評分） ─────────────────────────
-// 輸入：searchCandidates 結果 + 當前 session
-// 輸出：評分後前 3~5 套完整穿搭
+// ── 評分排序（TODO：實作 Beam Search + 三部份評分公式） ────────────────────────
+// 輸入：searchCandidates 結果 + session（用來取 user_vec）
+// 輸出：評分後的搭配清單（降序）
 //
 // TODO 實作步驟：
-//   Beam Search：
-//     Round 1: top × bottom → 保留前 10~15 套
-//     Round 2: + outer       → 保留前 10~15 套
-//     Round 3: + footwear    → 保留前 10~15 套
-//   評分公式（每件商品）：
-//     S = α·S_query + β·S_user + γ·S_compatibility
-//     S_query  = cosine(商品向量, query_embedding)
-//     S_user   = cosine(商品向量, user_vec)         ← 從 user_profile 取
-//     S_compat = cosine(商品向量, rule_embedding)   ← 從 compatible_pair 取
+//   S = α·S_query + β·S_user + γ·S_compatibility
+//   S_query      : query_embedding 與各單品 embedding 的 cosine similarity
+//   S_user       : user_vec 與各單品 embedding 的 cosine similarity（需偏好檔）
+//   S_compatibility: 同套搭配各單品 embedding 兩兩 cosine similarity 的平均
+//   Beam Search  : 寬度 3~5，逐 layer（top → bottom → outer → footwear）展開最佳路徑
 
 interface ScoredOutfit {
-  // 每套穿搭的商品清單（TODO：替換成實際型別）
+  // 搭配中各單品的資料（來自 candidatesByLayer 中的 CandidateItem）
   items: CandidateItem[];
-  // 套餐總分
+  // 綜合評分（越高越好）
   score: number;
   // 搭配理由（TODO：由 LLM 生成）
   reason: string;
@@ -591,35 +590,115 @@ async function formatRecommendation(
   // ── TODO 結束 ───────────────────────────────────────────────────────────────
 }
 
-// ── 推薦主流程（串接三段 dummy） ─────────────────────────────────────────────
-// debug 模式時將各步驟說明 push 到 debugLines（由呼叫者傳入）
+// ── 推薦主流程（串接三段 dummy，每步完成後即時 push 進度） ────────────────────
+// onProgress：由外部（webhook）傳入，用來即時推送進度給 LINE 使用者
 async function runRecommendation(
   classifiedResult: string,
   session: FashionSession,
   provider: string,
-  debugLines?: string[]
+  onProgress?: (msg: string) => Promise<void>
 ): Promise<string> {
   // Step A：搜尋候選服飾
-  debugLines?.push("[4/6] 🔍 搜尋候選服飾（searchCandidates）...");
   const searchResult = await searchCandidates(classifiedResult, session);
-  debugLines?.push(`      ↳ ${searchResult.debugSummary}`);
-  debugLines?.push(`      ↳ 各 layer 候選數：${
-    Object.entries(searchResult.candidatesByLayer)
-      .map(([k, v]) => `${k}=${v.length}`)
-      .join(", ")
-  }（dummy，實作後會有真實資料）`);
+  const layerSummary = Object.entries(searchResult.candidatesByLayer)
+    .map(([k, v]) => `  ${k}: ${v.length} 件`)
+    .join("\n");
+  await onProgress?.(
+    `🔍 候選服飾搜尋完成\n──────────\n${searchResult.debugSummary}\n候選數：\n${layerSummary || "  （各 layer 均為 dummy 空陣列，等待 embedding 實作）"}`
+  );
 
   // Step B：評分排序
-  debugLines?.push("[5/6] 📊 評分排序（scoreOutfits / Beam Search）...");
   const scoredOutfits = await scoreOutfits(searchResult, session);
-  debugLines?.push(`      ↳ 最終套餐數：${scoredOutfits.length}（dummy，實作後會有 3~5 套）`);
+  const topScore = scoredOutfits[0]?.score.toFixed(3) ?? "—";
+  await onProgress?.(
+    `📊 評分排序完成\n──────────\n套餐數：${scoredOutfits.length}${scoredOutfits.length === 0 ? "（dummy，Beam Search 尚未實作）" : ""}\n最高分：${topScore}`
+  );
 
   // Step C：格式化
-  debugLines?.push("[6/6] ✍️  格式化推薦結果（formatRecommendation）...");
   const result = await formatRecommendation(scoredOutfits, classifiedResult, session, provider);
-  debugLines?.push("      ↳ 完成，準備回傳");
-
   return result;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 使用者偏好更新
+// 在 session 結束（「重開」或手動 /end）後，用 LLM 萃取本次對話的偏好，
+// 寫入 data/user-prefs/{userId}.md，供下次 session 作為冷啟動上下文。
+// ══════════════════════════════════════════════════════════════════════════════
+
+const PREFERENCE_UPDATE_PROMPT = `你是 WowStylist 使用者偏好分析師。
+根據以下穿搭討論的對話記錄，提取使用者明確表達的偏好，以 Markdown 格式輸出。
+
+規則：
+- 只記錄使用者明確提到的內容，不推測或臆測沒說過的事
+- 若某欄位資料不足，直接省略該欄位
+- 每個欄位 1~3 條，簡潔即可
+- 直接輸出 Markdown 格式，不要任何說明文字或前言
+
+## 輸出格式（照此結構，省略空欄位）
+
+### 偏好風格
+（使用者在對話中提到的穿搭風格）
+
+### 場合
+（使用者討論的穿衣場合）
+
+### 預算
+（若有提到價格或預算範圍）
+
+### 顏色偏好
+（明確提到喜歡或不喜歡的顏色）
+
+### 版型／材質
+（若有特別提到的版型或材質偏好）
+
+### 其他備註
+（其他值得記錄的偏好，例如指定品牌、排斥風格等）`;
+
+/**
+ * 內部：讀取已結束的 session → LLM 萃取偏好 → 寫入 .md 檔。
+ * 在 endSession() 之後呼叫（sessionStore 中資料仍在，status=ended）。
+ */
+async function doUpdateUserPreference(userId: string, provider: string): Promise<void> {
+  const session = sessionStore.get(userId);
+  if (!session || session.turns.length < 2) {
+    console.log(`[pref] 跳過偏好更新（turns=${session?.turns.length ?? 0}，不足 2 輪）`);
+    return;
+  }
+
+  const transcript = session.turns
+    .map((t) => `${t.role === "user" ? "使用者" : "助手"}：${t.content.slice(0, 300)}`)
+    .join("\n");
+
+  const { content: extracted } = await callLLM(provider, PREFERENCE_UPDATE_PROMPT, transcript, 400);
+  if (!extracted) {
+    console.warn(`[pref] 偏好萃取 LLM 無回應，跳過`);
+    return;
+  }
+
+  const dir  = join(process.cwd(), "data", "user-prefs");
+  const file = join(dir, `${userId}.md`);
+
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+    const date      = new Date().toISOString().slice(0, 10);
+    const newBlock  = `\n\n---\n## Session ${date}\n\n${extracted.trim()}`;
+
+    if (existsSync(file)) {
+      const old = readFileSync(file, "utf-8");
+      // 把新的 session 插在第一行（標題）之後
+      const firstNewline = old.indexOf("\n");
+      const head = firstNewline >= 0 ? old.slice(0, firstNewline + 1) : old + "\n";
+      const tail = firstNewline >= 0 ? old.slice(firstNewline + 1) : "";
+      writeFileSync(file, head + newBlock + tail, "utf-8");
+    } else {
+      writeFileSync(file, `# 使用者偏好紀錄\n\n> userId: ${userId}${newBlock}`, "utf-8");
+    }
+
+    console.log(`[pref] 偏好檔更新完成 → ${file}`);
+  } catch (e) {
+    console.error(`[pref] 寫入偏好檔失敗:`, e);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -629,8 +708,18 @@ async function runRecommendation(
 export async function generateChatReply(
   userId: string | null,
   text: string,
-  nonIgUrls?: string[]
+  options?: {
+    // 非 IG 的 URL（webhook 偵測到後附上，讓 LLM 知道上下文）
+    nonIgUrls?: string[];
+    // 每個 phase 完成後呼叫，即時推送進度給 LINE 使用者
+    // 由 webhook 傳入 pushMessage(userId, msg)；不傳時靜默略過
+    onProgress?: (msg: string) => Promise<void>;
+  }
 ): Promise<string> {
+  const nonIgUrls = options?.nonIgUrls;
+  const onProgress = options?.onProgress;
+  const debug = process.env.CHAT_DEBUG === "true";
+
   const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
   const provider = explicit ||
     (process.env.OPENROUTER_API_KEY ? "openrouter" :
@@ -640,37 +729,28 @@ export async function generateChatReply(
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
-  const debug = process.env.CHAT_DEBUG === "true";
-
-  // debug 模式：累積逐步說明，最後拼在回傳訊息最前面
-  const debugLines: string[] = [];
-  const D = (line: string) => { if (debug) debugLines.push(line); };
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
-    const reply = chatWithRules(text);
-    if (debug) {
-      return `[DEBUG] provider=rules\n────────────\n${reply}`;
-    }
-    return reply;
+    return chatWithRules(text);
   }
 
   // ── LLM 模式 ────────────────────────────────────────────────────────────────
-  D(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
-  D("");
+  if (debug) {
+    await onProgress?.(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
+  }
 
   const userPrefs = loadUserPrefs(userId);
   if (userPrefs) {
     console.log(`[chat] 已載入使用者偏好 userId=${userId}`);
-    D(`ℹ️  已載入使用者偏好檔 (${userPrefs.length} chars)`);
+    await onProgress?.(`ℹ️ 已載入偏好檔（${userPrefs.length} 字元）`);
   } else {
-    D(`ℹ️  無使用者偏好檔（冷啟動）`);
+    await onProgress?.(`ℹ️ 無偏好檔（冷啟動）`);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Phase 1：意圖分類
   // ──────────────────────────────────────────────────────────────────────────
-  D("[1/6] 🧠 意圖分類中（CLASSIFIER_SYSTEM_PROMPT）...");
   const firstTurnMessage = buildFirstTurnMessage(text, nonIgUrls, userPrefs);
   console.log(`[chat] Phase 1 分類，provider=${provider} model=${model}`);
 
@@ -683,18 +763,34 @@ export async function generateChatReply(
 
   if (!classifiedResult) {
     console.warn(`[chat] 分類器無回應（${classifyReason}），降級到 rules`);
-    D(`      ↳ ❌ LLM 無回應：${classifyReason}`);
-    D("      ↳ 降級到 rules fallback");
-    const fallback = chatWithRules(text);
-    if (debug) {
-      return `${debugLines.join("\n")}\n────────────\n${fallback}`;
-    }
-    return fallback;
+    const errDetail = debug ? `\n原因：${classifyReason}` : "";
+    await onProgress?.(`❌ 意圖分類失敗，降級到關鍵字模式${errDetail}`);
+    return chatWithRules(text);
   }
 
   const intent = parseIntent(classifiedResult);
-  D(`      ↳ ✅ intent=${intent}`);
-  D(`      ↳ 分類輸出（前 120 字）：${classifiedResult.slice(0, 120).replace(/\n/g, " ")}`);
+  const intentLabels: Record<Intent, string> = {
+    A: "A（單品查找）",
+    B: "B（搭配現有衣物）",
+    C: "C（完整穿搭）",
+    other: "其他（閒聊／問候）",
+  };
+  // 從分類結果中擷取標籤摘要
+  const styleMatch = classifiedResult.match(/\[風格:\s*([^\]]+)\]/i);
+  const kwMatch    = classifiedResult.match(/\[keywords:\s*([^\]]+)\]/i);
+  const itemMatch  = classifiedResult.match(/\[item:\s*([^\]]+)\]/i);
+  const priceMatch = classifiedResult.match(/\[price:\s*([^\]]+)\]/i);
+
+  const tagLines: string[] = [`意圖：${intentLabels[intent]}`];
+  if (styleMatch) tagLines.push(`風格：${styleMatch[1].trim()}`);
+  if (kwMatch)    tagLines.push(`關鍵詞：${kwMatch[1].trim()}`);
+  if (itemMatch)  tagLines.push(`指定單品：${itemMatch[1].trim()}`);
+  if (priceMatch) tagLines.push(`預算：${priceMatch[1].trim()}`);
+  if (debug) {
+    tagLines.push(`分類輸出：${classifiedResult.slice(0, 120).replace(/\n/g, " ")}`);
+  }
+
+  await onProgress?.(`🧠 意圖分析完成\n──────────\n${tagLines.join("\n")}`);
   console.log(`[chat] 分類結果 intent=${intent}: ${classifiedResult.slice(0, 200)}`);
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -703,37 +799,47 @@ export async function generateChatReply(
   let session: FashionSession | null = null;
 
   if (!userId || intent === "other") {
-    D(`[2/6] 🗂️  Session：不適用（intent=${intent}，無需追蹤對話）`);
-    D("[3/6] ⏭️  跳過（非 B/C 意圖）");
-    D("");
-    D("────────────");
-    if (debug) return `${debugLines.join("\n")}\n${classifiedResult}`;
+    // A 意圖或閒聊：不開 session，直接回傳分類結果
     return classifiedResult;
   }
 
   // B / C 意圖：進入 session 管理
-  D("[2/6] 🗂️  Session 決策（intent=B/C）...");
   const existingSession = getActiveSession(userId);
 
   if (!existingSession) {
     session = startNewSession(userId);
-    D(`      ↳ 無現有 session → 開啟新 session（${session.sessionId}）`);
+    await onProgress?.(
+      `📂 Session 已開啟\n──────────\nSession ID：${session.sessionId}\n這是新對話`
+    );
   } else {
-    D(`      ↳ 現有 session=${existingSession.sessionId}（turns=${existingSession.turns.length}）`);
-    D("      ↳ 呼叫 SESSION_DECISION_PROMPT 判斷 continue/new...");
-
     const decision = await decideSessionAction(existingSession, text, provider);
-    D(`      ↳ 決策結果：${decision}`);
     console.log(`[chat] session 決策：${decision} sessionId=${existingSession.sessionId}`);
 
     if (decision === "new") {
+      const oldId    = existingSession.sessionId;
+      const oldTurns = existingSession.turns.length;
+
+      // 結束舊 session（資料仍保留在 sessionStore，status=ended）
       endSession(userId);
+
+      // 若舊 session 有足夠對話，萃取偏好並寫檔
+      if (oldTurns >= 2) {
+        await onProgress?.(`💾 更新偏好檔（舊 session ${oldTurns} 輪）...`);
+        await doUpdateUserPreference(userId, provider);
+        await onProgress?.(`💾 偏好檔更新完成`);
+      }
+
       session = startNewSession(userId);
-      D(`      ↳ 結束舊 session → 開啟新 session（${session.sessionId}）`);
+      await onProgress?.(
+        `📂 重新開啟 Session\n──────────\n舊 Session：${oldId}（${oldTurns} 輪）已結束\n新 Session：${session.sessionId}`
+      );
     } else {
       session = existingSession;
-      D("      ↳ 繼續現有 session，重新分類（帶對話歷史）...");
+      await onProgress?.(
+        `📂 繼續現有 Session\n──────────\nSession ID：${session.sessionId}\n歷史對話：${session.turns.length} 輪`
+      );
 
+      // 繼續路徑：帶入對話歷史重新分類
       const continuationMessage = buildContinuationMessage(session, text, nonIgUrls, userPrefs);
       const { content: reClassified } = await callLLM(
         provider,
@@ -744,56 +850,58 @@ export async function generateChatReply(
 
       if (reClassified) {
         const reIntent = parseIntent(reClassified);
-        D(`      ↳ 重新分類完成 intent=${reIntent}`);
+        const reStyleMatch = reClassified.match(/\[風格:\s*([^\]]+)\]/i);
+        const reKwMatch    = reClassified.match(/\[keywords:\s*([^\]]+)\]/i);
+        const reTagLines: string[] = [`意圖：${intentLabels[reIntent]}`];
+        if (reStyleMatch) reTagLines.push(`風格：${reStyleMatch[1].trim()}`);
+        if (reKwMatch)    reTagLines.push(`關鍵詞：${reKwMatch[1].trim()}`);
+        if (debug) {
+          reTagLines.push(`分類輸出：${reClassified.slice(0, 120).replace(/\n/g, " ")}`);
+        }
+        await onProgress?.(`🔄 重新分類（含對話歷史）\n──────────\n${reTagLines.join("\n")}`);
         console.log(`[chat] 重新分類（帶歷史）: ${reClassified.slice(0, 200)}`);
 
         // Phase 3（continuation 路徑）
-        D("[3/6] 📝 記錄使用者 turn（continuation）");
         appendTurn(session, { role: "user", content: text, intent: reIntent, timestamp: Date.now() });
 
         // Phase 4
-        const finalResult = await runRecommendation(reClassified, session, provider, debug ? debugLines : undefined);
+        const finalResult = await runRecommendation(reClassified, session, provider, onProgress);
 
         // Phase 5
-        D("[5/6 已完成] 📝 記錄 assistant turn");
         appendTurn(session, { role: "assistant", content: finalResult, timestamp: Date.now() });
-        D(`      ↳ sessionId=${session.sessionId} | 總 turns=${session.turns.length}`);
-        D("");
-        D("────────────");
-        if (debug) return `${debugLines.join("\n")}\n${finalResult}`;
+        await onProgress?.(
+          `📝 對話已記錄\n──────────\nSession：${session.sessionId}\n目前 turns：${session.turns.length}`
+        );
         return finalResult;
       }
 
-      D("      ↳ 重新分類失敗，使用第一輪結果繼續");
+      await onProgress?.("⚠️ 重新分類失敗，使用初始分類結果繼續");
     }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Phase 3：記錄使用者 turn（新 session 路徑）
   // ──────────────────────────────────────────────────────────────────────────
-  D("[3/6] 📝 記錄使用者 turn");
   appendTurn(session, { role: "user", content: text, intent, timestamp: Date.now() });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Phase 4：推薦流程
+  // Phase 4：推薦流程（searchCandidates → scoreOutfits → formatRecommendation）
   // ──────────────────────────────────────────────────────────────────────────
   const recommendation = await runRecommendation(
     classifiedResult,
     session,
     provider,
-    debug ? debugLines : undefined
+    onProgress
   );
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Phase 5：記錄 assistant turn，回傳
+  // Phase 5：記錄 assistant turn，回傳（由 webhook push 給使用者）
   // ──────────────────────────────────────────────────────────────────────────
-  D("[5/6 已完成] 📝 記錄 assistant turn");
   appendTurn(session, { role: "assistant", content: recommendation, timestamp: Date.now() });
-  D(`      ↳ sessionId=${session.sessionId} | 總 turns=${session.turns.length}`);
-  D("");
-  D("────────────");
+  await onProgress?.(
+    `📝 對話已記錄\n──────────\nSession：${session.sessionId}\n目前 turns：${session.turns.length}`
+  );
 
-  if (debug) return `${debugLines.join("\n")}\n${recommendation}`;
   return recommendation;
 }
 
@@ -810,13 +918,20 @@ export function endFashionSession(userId: string): void {
 
 /**
  * 取得使用者目前 session 的對話歷史。
- * 供偏好更新模組（preference updater）使用：
- *   - 讀取使用者在本次搭配討論中說過的需求
- *   - 結合最終選擇，更新 user_vec
- * 若無 session（或已結束）回傳 null。
+ * 若無 session（含已結束的）回傳 null。
  */
 export function getSessionHistory(userId: string): ChatTurn[] | null {
   const session = sessionStore.get(userId);
   if (!session) return null;
   return session.turns;
+}
+
+/**
+ * 手動觸發偏好檔更新（供 test script、webhook 的「結束」按鈕等外部呼叫）。
+ * 會讀取 sessionStore 中最後一筆該 userId 的 session（active 或 ended 皆可）。
+ * @param userId    LINE userId 或 test 用的任意字串
+ * @param provider  LLM provider（openrouter / anthropic / openai / rules）
+ */
+export async function updateUserPreferenceFile(userId: string, provider: string): Promise<void> {
+  await doUpdateUserPreference(userId, provider);
 }

@@ -13,9 +13,17 @@ import { generateChatReply } from "@/lib/chat";
 //   2. 含其他 URL  → 交給 LLM，附上「偵測到非 IG 連結」的上下文
 //   3. 純文字      → 交給 LLM 做穿搭對話
 //
-// 為什麼用 after()：抓 IG 一個連結要兩次 HTTP 往返，放在回應之前會把
-// function 的執行時間拉長，LINE 等不到 200 會重送，serverless 上也容易吃到
-// 逾時上限。after() 讓我們先把 200 丟回去，剩下的在背景跑完。
+// ★ 即時回饋架構（避免 LINE 5 秒 timeout）：
+//   路徑 2/3 現在改為：
+//     a. 立刻 replyText「⏳ 收到！」（< 1 秒）→ 確保 200 回傳給 LINE
+//     b. after() 背景跑完整流程（Hobby plan 最多 15 秒）
+//     c. 每個 phase 完成後用 pushMessage 即時推送進度給使用者
+//     d. 最後推送實際推薦結果
+//
+// 為什麼用 Push API 而不是 Reply API：
+//   replyToken 只能用一次、有效期約 30 秒，且在 after() 裡通常已過期。
+//   Push API 使用 userId，可以任何時候傳訊息，適合異步推送進度。
+//   注意：Push API 在 LINE 免費方案有月用量限制（每月 500 則）。
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +63,7 @@ async function getSenderName(userId: string): Promise<string | null> {
   }
 }
 
+// Reply API：用 replyToken，只能用一次，第一則「已收到」用這個
 async function replyText(replyToken: string, text: string): Promise<void> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token) {
@@ -86,6 +95,39 @@ async function replyText(replyToken: string, text: string): Promise<void> {
   }
 }
 
+// Push API：用 userId，可以任何時候傳，用於背景進度推送
+// 注意：LINE 免費方案每月 500 則，使用時請注意用量
+async function pushMessage(userId: string, text: string): Promise<void> {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token) {
+    console.error("[webhook] 沒有 LINE_CHANNEL_ACCESS_TOKEN，無法 push");
+    return;
+  }
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: userId,
+        messages: [{ type: "text", text }],
+      }),
+    });
+    if (!res.ok) {
+      console.error(
+        `[webhook] LINE push 失敗 HTTP ${res.status}:`,
+        await res.text()
+      );
+    } else {
+      console.log(`[webhook] push 成功 userId=${userId.slice(0, 8)}...`);
+    }
+  } catch (e) {
+    console.error("[webhook] LINE push failed:", e);
+  }
+}
+
 export async function POST(req: Request) {
   // 一定要用「原始字串」驗簽章，先 json() 再 stringify 會驗不過
   const rawBody = await req.text();
@@ -109,27 +151,26 @@ export async function POST(req: Request) {
     if (event.type !== "message" || event.message?.type !== "text") continue;
 
     const text = event.message.text ?? "";
+    const userId = event.source?.userId ?? null;
     console.log(`[webhook] 文字訊息: ${text.slice(0, 120)}`);
 
     // ── 路由判斷 ─────────────────────────────────────────────────
     const igLinks = extractIgLinks(text);
     const allUrls = extractAnyUrls(text);
-    // 非 IG 的 URL（排除已被 IG 正規化處理的）
     const nonIgUrls = allUrls.filter((u) => !u.includes("instagram.com"));
 
     console.log(
       `[webhook] IG 連結 ${igLinks.length} 個、非 IG URL ${nonIgUrls.length} 個`
     );
 
-    // ── 路徑 1：有 IG 連結 → 收藏流程 ───────────────────────────
+    // ── 路徑 1：有 IG 連結 → 收藏流程（邏輯不變） ──────────────
     if (igLinks.length > 0) {
-      const senderId = event.source?.userId ?? null;
-      const senderName = senderId ? await getSenderName(senderId) : null;
+      const senderName = userId ? await getSenderName(userId) : null;
 
       const savedRows = [];
       for (const link of igLinks) {
         savedRows.push(
-          await saveLinkBasic(link, { sourceText: text, senderId, senderName })
+          await saveLinkBasic(link, { sourceText: text, senderId: userId, senderName })
         );
       }
       console.log(`[webhook] 已存入 ${savedRows.length} 筆`);
@@ -141,7 +182,6 @@ export async function POST(req: Request) {
         );
       }
 
-      // 回應送出之後才抓 IG 內容
       const pending = savedRows.filter((row) => row.fetchStatus !== "ok");
       if (pending.length > 0) {
         after(async () => {
@@ -158,16 +198,55 @@ export async function POST(req: Request) {
       continue;
     }
 
-    // ── 路徑 2 & 3：非 IG URL 或純文字 → LLM 對話 ──────────────
-    // nonIgUrls 若有值，chat.ts 會把連結帶進 prompt 讓 LLM 知道上下文
+    // ── 路徑 2 & 3：非 IG URL 或純文字 → LLM 穿搭對話 ──────────
+    //
+    // ★ 新架構：立刻回覆「收到」，背景用 Push API 推送每一步進度
+    //
+    // Step 1：在 LINE 5 秒 timeout 前送出第一則「已收到」
     if (event.replyToken) {
-      const answer = await generateChatReply(
-        event.source?.userId ?? null,
-        text,
-        nonIgUrls.length > 0 ? nonIgUrls : undefined
-      );
-      await replyText(event.replyToken, answer);
+      await replyText(event.replyToken, "⏳ 收到！正在幫你分析穿搭，請稍候...");
     }
+
+    // Step 2：after() 背景處理（Hobby plan 最多 15 秒）
+    // 用 const 捕捉迴圈變數，避免 closure 問題
+    const capturedUserId = userId;
+    const capturedText = text;
+    const capturedNonIgUrls = nonIgUrls;
+
+    after(async () => {
+      const debug = process.env.CHAT_DEBUG === "true";
+
+      try {
+        // onProgress：每個 phase 完成後立刻 push 一則訊息給使用者
+        // 若沒有 userId（不應發生），靜默略過 push
+        const onProgress = capturedUserId
+          ? async (msg: string) => {
+              await pushMessage(capturedUserId, msg);
+            }
+          : undefined;
+
+        // 執行完整穿搭流程
+        const answer = await generateChatReply(capturedUserId, capturedText, {
+          nonIgUrls: capturedNonIgUrls.length > 0 ? capturedNonIgUrls : undefined,
+          onProgress,
+        });
+
+        // 推送最終推薦結果
+        if (capturedUserId) {
+          await pushMessage(capturedUserId, answer);
+        }
+
+      } catch (e) {
+        console.error("[webhook] 背景處理失敗:", e);
+        // 推送錯誤通知（debug 模式顯示詳情）
+        if (capturedUserId) {
+          const errMsg = debug
+            ? `❌ 處理時發生錯誤：\n${String(e).slice(0, 400)}`
+            : "很抱歉，處理時發生問題，請稍後再試 🙏";
+          await pushMessage(capturedUserId, errMsg);
+        }
+      }
+    });
   }
 
   // LINE 只要求回 200，內容不重要；出錯也盡量回 200 避免 LINE 重送轟炸
