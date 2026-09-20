@@ -16,18 +16,34 @@ import { listStyleProfiles } from "@/lib/rank";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/**
+ * NextResponse.json() 送出的 content-type 不帶 charset，
+ * 有些 client（終端機、部分瀏覽器設定）會拿系統編碼去解，中文就變亂碼。
+ * 這是除錯工具，看不懂字等於沒用，所以明確標 utf-8。
+ */
+function json(data: unknown, status = 200) {
+  return new NextResponse(JSON.stringify(data, null, 2), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const expected = process.env.DIAG_TOKEN;
 
   if (!expected) {
-    return NextResponse.json(
-      { error: "DIAG_TOKEN 沒設，這支端點是關閉的" },
-      { status: 404 }
+    return json(
+      {
+        error: "DIAG_TOKEN is not set — this endpoint is disabled.",
+        error_zh: "DIAG_TOKEN 沒設，這支端點是關閉的",
+        howto: "Vercel → Settings → Environment Variables → 新增 DIAG_TOKEN（值自己取）→ 重新部署",
+      },
+      404
     );
   }
   if (url.searchParams.get("token") !== expected) {
-    return NextResponse.json({ error: "token 不對" }, { status: 401 });
+    return json({ error: "bad token", error_zh: "token 不對" }, 401);
   }
 
   const text = url.searchParams.get("text") ?? "幫我推薦夏日穿搭";
@@ -79,7 +95,7 @@ export async function GET(req: Request) {
       mark("穿搭建議", advice ? `${advice.length} 字` : "沒產出");
     }
 
-    return NextResponse.json({
+    return json({
       ok: true,
       query: text,
       totalMs: Date.now() - t0,
@@ -103,7 +119,7 @@ export async function GET(req: Request) {
     });
   } catch (e) {
     mark("丟出例外", String(e));
-    return NextResponse.json(
+    return json(
       {
         ok: false,
         query: text,
@@ -114,7 +130,7 @@ export async function GET(req: Request) {
         error: String(e),
         stack: e instanceof Error ? e.stack?.split("\n").slice(0, 12) : undefined,
       },
-      { status: 500 }
+      500
     );
   }
 }
