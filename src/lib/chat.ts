@@ -403,7 +403,12 @@ function loadUserPrefs(userId: string | null): string | null {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const PREFERENCE_UPDATE_PROMPT = `你是 WowStylist 使用者偏好分析師。
-根據以下穿搭討論的對話記錄，提取使用者明確表達的偏好，以 Markdown 格式輸出。
+根據以下使用者在本次穿搭討論中累積的所有需求輸入，提取使用者明確表達的偏好，以 Markdown 格式輸出。
+
+輸入說明：
+- 開頭若有 [使用者偏好紀錄] 區塊，是上次 session 留下的舊偏好，可作為參考但不應直接複製
+- 其餘內容是本次 session 使用者實際輸入的穿搭需求（可能有多輪累積）
+- 請以本次 session 的新需求為主更新偏好
 
 規則：
 - 只記錄使用者明確提到的內容，不推測或臆測沒說過的事
@@ -414,7 +419,7 @@ const PREFERENCE_UPDATE_PROMPT = `你是 WowStylist 使用者偏好分析師。
 ## 輸出格式（照此結構，省略空欄位）
 
 ### 偏好風格
-（使用者在對話中提到的穿搭風格）
+（使用者在本次對話中提到的穿搭風格）
 
 ### 場合
 （使用者討論的穿衣場合）
@@ -432,21 +437,29 @@ const PREFERENCE_UPDATE_PROMPT = `你是 WowStylist 使用者偏好分析師。
 （其他值得記錄的偏好，例如指定品牌、排斥風格等）`;
 
 /**
- * 內部：讀取已結束的 session → LLM 萃取偏好 → 寫入 .md 檔。
+ * 內部：讀取已結束的 session → 以 accumulatedRequest 萃取偏好 → 寫入 .md 檔。
  * 在 endSession() 之後呼叫（sessionStore 中資料仍在，status=ended）。
+ * 使用 accumulatedRequest（完整累積需求）而非 turns transcript，
+ * 確保 LLM 拿到的是使用者原始需求全文，而非摘要過的對話紀錄。
  */
 async function doUpdateUserPreference(userId: string, provider: string): Promise<void> {
   const session = sessionStore.get(userId);
-  if (!session || session.turns.length < 2) {
-    console.log(`[pref] 跳過偏好更新（turns=${session?.turns.length ?? 0}，不足 2 輪）`);
+
+  // 沒有累積需求 或 turns 少於 1 輪（使用者從未真正送出過需求），跳過
+  const hasRequest = session?.accumulatedRequest && session.accumulatedRequest.trim().length > 0;
+  const hasTurns   = (session?.turns.length ?? 0) >= 1;
+  if (!session || !hasRequest || !hasTurns) {
+    console.log(
+      `[pref] 跳過偏好更新（turns=${session?.turns.length ?? 0}, accLen=${session?.accumulatedRequest?.length ?? 0}）`
+    );
     return;
   }
 
-  const transcript = session.turns
-    .map((t) => `${t.role === "user" ? "使用者" : "助手"}：${t.content.slice(0, 300)}`)
-    .join("\n");
+  // 以本次 session 累積的使用者需求全文送給 LLM 萃取偏好
+  const inputText = session.accumulatedRequest;
+  console.log(`[pref] 送出累積需求（${inputText.length} 字元）給 LLM 萃取偏好`);
 
-  const { content: extracted } = await callLLM(provider, PREFERENCE_UPDATE_PROMPT, transcript, 400);
+  const { content: extracted } = await callLLM(provider, PREFERENCE_UPDATE_PROMPT, inputText, 500);
   if (!extracted) {
     console.warn(`[pref] 偏好萃取 LLM 無回應，跳過`);
     return;
