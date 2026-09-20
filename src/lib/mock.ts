@@ -1,22 +1,11 @@
 // ---------------------------------------------------------------------------
-// Mock data — 之後接上 Amazon RDS 就可以整份移除。
-// 目前用途：
-//   1. 收藏夾：資料庫連不上或還沒有資料時的 fallback（見 src/lib/links.ts）
-//   2. style 風向標：tags table 還沒建，先用這份當種子（見 src/lib/tags.ts）
+// 示範資料 —— pipeline 還沒跑過、或資料庫連不上時的 fallback。
+//   1. 收藏夾：見 src/lib/garments.ts
+//   2. style 風向標：style_tags 表還是空的時候的種子，見 src/lib/tags.ts
+// 真的有資料之後這兩份就不會被用到了。
 // ---------------------------------------------------------------------------
 
-export type BoardLink = {
-  id: number;
-  url: string;
-  shortcode: string;
-  kind: string;
-  username: string | null;
-  caption: string | null;
-  mediaPath: string | null;
-  isVideo: boolean;
-  senderName: string | null;
-  createdAt: string; // ISO
-};
+import type { Garment } from "@/lib/garments";
 
 export type StyleTagKind = "style" | "color" | "mood";
 
@@ -24,135 +13,128 @@ export type StyleTag = {
   id: string;
   label: string;
   kind: StyleTagKind;
-  /** 0~1，決定標籤在風向標上的大小權重。之後可由 RDS 依收藏次數算出來。 */
+  /** 0~1，決定標籤在風向標上的大小權重。 */
   weight: number;
 };
 
 const day = 86_400_000;
 const now = Date.now();
 
-/** 收藏夾的假資料。mediaPath 指到 public/ 底下，沒有檔案就會顯示紙質留白。 */
-export const MOCK_LINKS: BoardLink[] = [
-  {
-    id: -1,
-    url: "https://www.instagram.com/p/DdUXGzZyjeN/",
-    shortcode: "DdUXGzZyjeN",
-    kind: "post",
-    username: "atelier.linen",
-    caption: "亞麻襯衫 + 奶油白長裙，初秋的鬆弛感穿搭。",
-    mediaPath: "/media/DdUXGzZyjeN.jpg",
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 1 * day).toISOString(),
-  },
-  {
-    id: -2,
-    url: "https://www.instagram.com/reel/DceqdZ0qzUY/",
-    shortcode: "DceqdZ0qzUY",
-    kind: "reel",
-    username: "quiet.wardrobe",
-    caption: "一週五套老錢風通勤穿搭，主色只有燕麥米跟墨綠。",
-    mediaPath: "/media/DceqdZ0qzUY.jpg",
-    isVideo: true,
-    senderName: "示範資料",
-    createdAt: new Date(now - 3 * day).toISOString(),
-  },
-  {
-    id: -3,
-    url: "https://www.instagram.com/p/Dcn_sFwsWDI/",
-    shortcode: "Dcn_sFwsWDI",
-    kind: "post",
-    username: "morningpaper.co",
-    caption: "焦糖棕皮革配件的三種搭法。",
-    mediaPath: "/media/Dcn_sFwsWDI.jpg",
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 5 * day).toISOString(),
-  },
-  {
-    id: -4,
-    url: "https://www.instagram.com/p/DcmYBQDA9bT/",
-    shortcode: "DcmYBQDA9bT",
-    kind: "post",
-    username: "studio.grisaille",
-    caption: "灰調莫蘭迪色系的層次疊穿。",
-    mediaPath: "/media/DcmYBQDA9bT.jpg",
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 8 * day).toISOString(),
-  },
-  {
-    id: -5,
-    url: "https://www.instagram.com/reel/DdC3Fytju_R/",
-    shortcode: "DdC3Fytju_R",
-    kind: "reel",
-    username: "the.ballet.diary",
-    caption: "芭蕾風針織 + 緞面裙，甜but不膩的版本。",
-    mediaPath: "/media/DdC3Fytju_R.jpg",
-    isVideo: true,
-    senderName: "示範資料",
-    createdAt: new Date(now - 11 * day).toISOString(),
-  },
-  {
-    id: -6,
-    url: "https://www.instagram.com/p/mock-06/",
-    shortcode: "mock-06",
-    kind: "post",
-    username: "hallway.notes",
-    caption: "把西裝外套當襯衫穿，肩線要鬆一個尺寸。",
-    mediaPath: null,
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 14 * day).toISOString(),
-  },
-  {
-    id: -7,
-    url: "https://www.instagram.com/p/mock-07/",
-    shortcode: "mock-07",
-    kind: "post",
-    username: "salt.and.wool",
-    caption: "霧霾藍 × 奶油白，冬天最安全的組合。",
-    mediaPath: null,
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 17 * day).toISOString(),
-  },
-  {
-    id: -8,
-    url: "https://www.instagram.com/reel/mock-08/",
-    shortcode: "mock-08",
-    kind: "reel",
-    username: "second.hand.girl",
-    caption: "二手店挑外套的四個重點：肩線、內襯、鈕釦、下襬。",
-    mediaPath: null,
-    isVideo: true,
-    senderName: "示範資料",
-    createdAt: new Date(now - 21 * day).toISOString(),
-  },
-  {
-    id: -9,
-    url: "https://www.instagram.com/p/mock-09/",
-    shortcode: "mock-09",
-    kind: "post",
-    username: "atelier.linen",
-    caption: "學院風格紋裙的長度分水嶺。",
-    mediaPath: null,
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 26 * day).toISOString(),
-  },
-  {
-    id: -10,
-    url: "https://www.instagram.com/p/mock-10/",
-    shortcode: "mock-10",
-    kind: "post",
-    username: "quiet.wardrobe",
-    caption: "中性帥氣：oversize 白襯衫、直筒褲、樂福鞋。",
-    mediaPath: null,
-    isVideo: false,
-    senderName: "示範資料",
-    createdAt: new Date(now - 30 * day).toISOString(),
-  },
+function mock(
+  id: number,
+  category: "top" | "pants",
+  description: string,
+  displayTags: string[],
+  outfitTags: string[],
+  shortcode: string,
+  type: "post" | "reel",
+  ageDays: number
+): Garment {
+  return {
+    id,
+    source: "instagram",
+    sourceItemId: `${shortcode}_${type === "reel" ? "t6.0" : "p0"}_0_${category}`,
+    category,
+    description,
+    displayTags,
+    outfitTags,
+    instagramUrl: `https://www.instagram.com/${
+      type === "reel" ? "reel" : "p"
+    }/${shortcode}/`,
+    instagramType: type,
+    shortcode,
+    timestamp: type === "reel" ? 6 : null,
+    // 商品欄位，IG 來的一律 null
+    title: null,
+    priceTwd: null,
+    productUrl: null,
+    hasImage: false,
+    createdAt: new Date(now - ageDays * day).toISOString(),
+  };
+}
+
+/** 收藏夾的示範單品。hasImage=false，所以卡片會顯示紙質留白。 */
+export const MOCK_GARMENTS: Garment[] = [
+  mock(
+    -1,
+    "top",
+    "A relaxed oatmeal linen shirt with a soft drape, long sleeves rolled to the forearm, and a camp collar.",
+    ["Oatmeal", "Linen", "Relaxed-fit", "Long-sleeve"],
+    ["Minimal", "Relaxed"],
+    "mock-01",
+    "post",
+    1
+  ),
+  mock(
+    -2,
+    "pants",
+    "Cream wide-leg trousers with a high rise, full length, and a smooth structured fabric appearance.",
+    ["Cream", "Wide-leg", "High-rise"],
+    ["Minimal", "Relaxed"],
+    "mock-01",
+    "post",
+    1
+  ),
+  mock(
+    -3,
+    "top",
+    "A fitted dark brown ribbed tank top with a sleeveless cut and scoop neckline.",
+    ["Dark Brown", "Tank Top", "Ribbed", "Fitted"],
+    ["Casual", "Monochrome"],
+    "mock-02",
+    "reel",
+    3
+  ),
+  mock(
+    -4,
+    "pants",
+    "Black relaxed cargo shorts with a loose silhouette and utility pocket details.",
+    ["Black", "Cargo", "Relaxed-fit", "Shorts"],
+    ["Casual", "Streetwear"],
+    "mock-02",
+    "reel",
+    3
+  ),
+  mock(
+    -5,
+    "top",
+    "An oversized off-white cotton shirt with dropped shoulders and a classic point collar.",
+    ["Off-white", "Oversized", "Cotton"],
+    ["Minimal", "Clean"],
+    "mock-03",
+    "post",
+    6
+  ),
+  mock(
+    -6,
+    "pants",
+    "Olive straight-leg denim-like trousers with a mid rise and full length.",
+    ["Olive", "Straight-leg", "Denim-like"],
+    ["Casual", "Earthy"],
+    "mock-03",
+    "post",
+    6
+  ),
+  mock(
+    -7,
+    "top",
+    "A charcoal heavyweight hoodie with a relaxed fit, kangaroo pocket, and soft brushed knit appearance.",
+    ["Charcoal", "Hoodie", "Relaxed-fit"],
+    ["Streetwear", "Sporty"],
+    "mock-04",
+    "reel",
+    10
+  ),
+  mock(
+    -8,
+    "pants",
+    "Grey tapered sweatpants with an elasticated waist and cuffed hem.",
+    ["Grey", "Sweatpants", "Tapered"],
+    ["Sporty", "Relaxed"],
+    "mock-04",
+    "reel",
+    10
+  ),
 ];
 
 /** style 風向標的種子標籤（20 個）。 */

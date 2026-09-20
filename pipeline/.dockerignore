@@ -1,0 +1,10 @@
+.venv/
+outputs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+README.md
+migrations/
+py

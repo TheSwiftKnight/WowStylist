@@ -1,0 +1,74 @@
+#!/usr/bin/env sh
+#
+# pipeline/py — 一律用 pipeline/.venv 裡的 python 跑東西。
+#
+# 為什麼要這支：macOS 上 `python3` 可能是 Homebrew 的（PEP 668 直接擋安裝）、
+# 可能是 conda 的、可能是 pyenv 的，而且會隨著有沒有 activate 而變。
+# 套件裝到 A、跑的時候用 B，就會出現「明明裝了卻說沒有」。
+# npm run 的 pipeline 指令全部走這支，永遠是同一個環境，不用 activate。
+#
+#   ./py -m pip install -r requirements.txt
+#   ./py -m uvicorn api.main:app --reload --port 8000
+#   ./py -m fashion_retrieval.doctor
+#
+# 想用自己的環境（conda / 現成的 venv）也可以，activate 之後
+# 把 ./py 換成 python 照樣跑，這支只是省掉 activate 這一步。
+#
+# 注意：venv 不能跨機器/跨作業系統共用（裡面存的是絕對路徑）。
+# 這個資料夾如果會在不同機器上打開，各自 rm -rf .venv 重建。
+
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV="$DIR/.venv"
+PY="$VENV/bin/python"
+
+broken() {
+    echo "" >&2
+    echo "[pipeline] $DIR/.venv 壞了或不是這台機器建的。" >&2
+    echo "[pipeline] 修法：" >&2
+    echo "             rm -rf pipeline/.venv" >&2
+    echo "             npm run pipeline:install" >&2
+    echo "" >&2
+    exit 1
+}
+
+if [ -d "$VENV" ]; then
+
+    # venv 存在但 python 跑不起來 = 壞的（常見原因：換了機器、
+    # 或是 Homebrew / pyenv 把底下那支 python 升版、移掉了）
+    [ -x "$PY" ] || broken
+    "$PY" -c "" >/dev/null 2>&1 || broken
+
+else
+
+    # 找一支拿來建 venv 的 python
+    BOOTSTRAP=""
+    for candidate in python3.12 python3.11 python3.13 python3.10 python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            BOOTSTRAP="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$BOOTSTRAP" ]; then
+        echo "[pipeline] 找不到 python3。brew install python@3.12 之後再試。" >&2
+        exit 1
+    fi
+
+    echo "[pipeline] 建立虛擬環境 pipeline/.venv（用 $BOOTSTRAP）…" >&2
+
+    "$BOOTSTRAP" -m venv "$VENV" || {
+        echo "[pipeline] 建立失敗。" >&2
+        exit 1
+    }
+
+    [ -x "$PY" ] || broken
+    "$PY" -c "" >/dev/null 2>&1 || broken
+
+    "$PY" -m pip install --upgrade pip --quiet || true
+
+    echo "[pipeline] 好了。" >&2
+fi
+
+exec "$PY" "$@"

@@ -1,5 +1,20 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
+import {
+  loadStyleCandidates,
+  loadCandidateProducts,
+  loadUserPreferenceEmbeddings,
+  embedQuery,
+  rankCategory,
+  resolveProductSource,
+  TOP_M,
+  USER_WEIGHT,
+  QUERY_WEIGHT,
+  type StyleCandidates,
+  type StyleMatch,
+  type Product,
+  type RankedProduct,
+} from "@/lib/rank";
 
 // 穿搭對話核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
@@ -12,11 +27,20 @@ import { join } from "path";
 // 核心流程（LLM 模式）：
 //   1. 若輸入為問候 / 使用說明 → chatWithRules() 直接回傳
 //   2. 取得或開啟 session
-//      - 新 session：accumulatedRequest 以偏好檔內容初始化
+//      - 新 session：accumulatedRequest 以使用者偏好檔
+//        （data/user-prefs/<userId>.md）初始化
+//      - session 只在使用者傳「結束這次討論」或傳 IG 連結時結束，
+//        在那之前每一輪的輸入都會累積起來一起送進分析
 //   3. accumulatedRequest = accumulatedRequest + "\n\n" + 本次輸入
-//   4. 送 accumulatedRequest 給 LLM 做語意分析（單次 call）
+//   4. 送 accumulatedRequest 給 LLM 做語意分析（單次 call）→ 得到 [風格:] 等標籤
 //   5. 若 intent = "other" → 回傳「告訴我多一點…」
-//   6. 其他意圖 → 更新 session，回傳分類結果
+//   6. A/B/C 意圖 → 分類結果**不是**最終回覆，而是推薦 pipeline 的輸入：
+//        runRecommendation
+//          → searchCandidates  : [風格:] 查 style_kb → 撈候選商品向量 + 偏好向量
+//          → scoreOutfits      : rank.ts 算 S_final = 0.67×S_user + 0.33×S_query
+//          → formatRecommendation : 排出前幾套，格式化成回覆
+//      （合併 feature/llm-routing 時特別保留這段：分支上原本是直接把
+//        「適合風格」當成回覆輸出，那會跳過整個查表→算分流程。）
 //
 // 意圖類型：
 //   A：找「一件特定單品」，給限制條件，不需要搭配
@@ -385,6 +409,12 @@ function chatWithRules(text: string): string {
 }
 
 // ── 讀取使用者偏好檔 ──────────────────────────────────────────────────────────
+// data/user-prefs/<userId>.md —— 由 doUpdateUserPreference() 在使用者傳
+// 「結束這次討論」時寫入／更新（見本檔下方）。
+//
+// 注意：這裡讀的是「給 prompt 看的文字偏好」。rank.ts 另外有
+// loadUserPreferenceEmbeddings()，那個是算 S_user 用的向量，來源是 IG RDS，
+// 兩者互不影響。
 function loadUserPrefs(userId: string | null): string | null {
   if (!userId) return null;
   try {
@@ -492,6 +522,340 @@ async function doUpdateUserPreference(userId: string, provider: string): Promise
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 推薦流程三段式（各為獨立 dummy，後續可各自替換實作）
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 候選搜尋（TODO：實作 embedding + 向量搜尋） ───────────────────────────────
+// 輸入：分類器輸出（含 [keywords:] [item:] [風格:] [price:] 標籤）
+// 輸出：各 layer 候選商品清單 + query_embedding
+//
+// TODO 實作步驟：
+//   1. 解析 [keywords:] [item:] [風格:] [price:] 標籤
+//   2. embed keywords → query_embedding（呼叫 HF InferenceClient / BAAI/bge-m3）
+//   3. 在 fashion_items 資料表做向量搜尋（cosine similarity = dot product，已 L2-normalized）
+//   4. 若有 [item:]，固定該 layer，只搜尋其餘 layer
+//   5. 回傳各 layer 的 top-15~20 候選商品
+
+// 候選商品（TODO：替換成實際 DB 型別）
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CandidateItem = Record<string, any>;
+
+interface SearchResult {
+  // 各 layer 的候選商品清單，key = layer 名稱（top / bottom / outer / footwear）
+  candidatesByLayer: Record<string, CandidateItem[]>;
+  // query embedding（供評分階段用）
+  queryEmbedding: number[] | null;
+  // debug 摘要（顯示解析出的標籤）
+  debugSummary: string;
+  // ── 以下是接上 rank.ts 之後新增的 ──
+  style: StyleCandidates | null;
+  products: Map<number, Product>;
+  userPrefs: { top: number[][]; bottom: number[][]; scope: string };
+  error: string | null;
+}
+
+const EMPTY_LAYERS = { top: [], bottom: [], outer: [], footwear: [] };
+
+function emptySearchResult(
+  debugSummary: string,
+  error: string | null
+): SearchResult {
+  return {
+    candidatesByLayer: { ...EMPTY_LAYERS },
+    queryEmbedding: null,
+    debugSummary,
+    style: null,
+    products: new Map(),
+    userPrefs: { top: [], bottom: [], scope: "none" },
+    error,
+  };
+}
+
+// ── 搜尋候選服飾 ─────────────────────────────────────────────────────────────
+// 輸入：分類器輸出（含 [keywords:] [item:] [風格:] [price:] 標籤）
+// 輸出：每個 layer 的候選商品 + query embedding
+//
+// 流程：
+//   1. 解析標籤
+//   2. [風格:] → data/style-kb/style_kb.jsonl 查出離線算好的候選商品
+//      （build_style_lookup.py 跑的，demo 期間商品庫和風格庫都不會變）
+//   3. 撈這幾十個候選的向量 + 使用者長期偏好向量
+//   4. 把這次查詢編成向量
+
+async function searchCandidates(
+  classifiedResult: string,
+  session: FashionSession
+): Promise<SearchResult> {
+  const keywordsMatch = classifiedResult.match(/\[keywords:\s*([^\]]+)\]/i);
+  const itemMatch     = classifiedResult.match(/\[item:\s*([^\]]+)\]/i);
+  const styleMatch    = classifiedResult.match(/\[風格:\s*([^\]]+)\]/);
+  const priceMatch    = classifiedResult.match(/\[price:\s*([^\]]+)\]/i);
+
+  const keywords = keywordsMatch?.[1]?.trim() ?? null;
+  const item     = itemMatch?.[1]?.trim()     ?? null;
+  const styleTag = styleMatch?.[1]?.trim()    ?? null;
+  const price    = priceMatch?.[1]?.trim()    ?? null;
+
+  const debugParts = [
+    `keywords: ${keywords ?? "(未解析到)"}`,
+    item  ? `item: ${item}`       : null,
+    styleTag ? `style: ${styleTag}` : null,
+    price ? `price: ${price}`     : null,
+  ].filter(Boolean);
+
+  // 分類器可能一次給好幾個風格，取第一個在 KB 裡找得到的
+  const styleNames = (styleTag ?? "")
+    .split(/[,，、]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let style: StyleCandidates | null = null;
+  for (const name of styleNames) {
+    style = loadStyleCandidates(name);
+    if (style) break;
+  }
+
+  if (!style) {
+    const reason = styleNames.length === 0
+      ? "分類器沒有給 [風格:] 標籤"
+      : `style_kb.jsonl 裡找不到：${styleNames.join(" / ")}`;
+    console.log(`[chat] searchCandidates 跳過排序 — ${reason}`);
+    return emptySearchResult(
+      [...debugParts, reason].join(" | "),
+      reason
+    );
+  }
+
+  debugParts.push(`命中風格: ${style.styleZh ?? style.style}`);
+
+  // query 文字：關鍵字最能代表這次的需求，沒有的話退回 item / 原句
+  const queryText =
+    keywords ?? item ?? classifiedResult.replace(/\[[^\]]*\]/g, "").trim();
+
+  const productIds = [
+    ...style.top.map((c) => c.product_id),
+    ...style.bottom.map((c) => c.product_id),
+  ];
+
+  try {
+    const [products, queryEmbedding, topPrefs, bottomPrefs] = await Promise.all([
+      loadCandidateProducts(productIds),
+      embedQuery(queryText),
+      loadUserPreferenceEmbeddings(session.userId, "top"),
+      loadUserPreferenceEmbeddings(session.userId, "bottom"),
+    ]);
+
+    if (products.size === 0) {
+      const source = await resolveProductSource();
+      const reason = source
+        ? `${source.table} 裡找不到這 ${productIds.length} 個候選商品的 embedding`
+        : "找不到商品向量來源（fashion_items 沒有 source='product' 的列，也沒有 products 表）";
+      console.warn(`[chat] searchCandidates: ${reason}`);
+      return emptySearchResult([...debugParts, reason].join(" | "), reason);
+    }
+
+    const scope =
+      topPrefs.scope === "user" || bottomPrefs.scope === "user"
+        ? "user"
+        : topPrefs.scope === "global" || bottomPrefs.scope === "global"
+          ? "global"
+          : "none";
+
+    debugParts.push(
+      `候選 top=${style.top.length} bottom=${style.bottom.length}`,
+      `商品向量 ${products.size} 筆`,
+      `偏好向量 top=${topPrefs.embeddings.length} bottom=${bottomPrefs.embeddings.length}（${
+        scope === "user" ? "本人收藏" : scope === "global" ? "全體收藏" : "無"
+      }）`
+    );
+
+    return {
+      candidatesByLayer: {
+        top: style.top,
+        bottom: style.bottom,
+        outer: [],
+        footwear: [],
+      },
+      queryEmbedding,
+      debugSummary: debugParts.join(" | "),
+      style,
+      products,
+      userPrefs: {
+        top: topPrefs.embeddings,
+        bottom: bottomPrefs.embeddings,
+        scope,
+      },
+      error: null,
+    };
+  } catch (err) {
+    const reason = String(err);
+    console.error("[chat] searchCandidates 失敗：", err);
+    return emptySearchResult([...debugParts, reason].join(" | "), reason);
+  }
+}
+
+// ── 評分與排序 ───────────────────────────────────────────────────────────────
+// S_final = 0.67 × S_user + 0.33 × S_query
+//   S_user  = 商品向量跟「使用者收藏的 IG 單品」的平均 cosine
+//   S_query = 商品向量跟這次查詢的 cosine
+// 沒有收藏紀錄時 S_final = S_query（見 rank.ts 的 finalScore）
+//
+// 目前一套 = 一件上衣 + 一件下著，按名次配對。
+// 之後要做 Beam Search / 相容性分數的話，從這裡往下加。
+
+interface ScoredOutfit {
+  items: CandidateItem[];
+  score: number;
+  reason: string;
+}
+
+async function scoreOutfits(
+  searchResult: SearchResult,
+  _session: FashionSession
+): Promise<ScoredOutfit[]> {
+  const { queryEmbedding, products, userPrefs, style } = searchResult;
+
+  if (!style || !queryEmbedding || products.size === 0) return [];
+
+  const rankedTops = rankCategory(
+    searchResult.candidatesByLayer.top as StyleMatch[],
+    products,
+    userPrefs.top,
+    queryEmbedding,
+    TOP_M
+  );
+
+  const rankedBottoms = rankCategory(
+    searchResult.candidatesByLayer.bottom as StyleMatch[],
+    products,
+    userPrefs.bottom,
+    queryEmbedding,
+    TOP_M
+  );
+
+  console.log(
+    `[chat] scoreOutfits top=${rankedTops.length} bottom=${rankedBottoms.length} ` +
+    `weights=${USER_WEIGHT}/${QUERY_WEIGHT} prefScope=${userPrefs.scope}`
+  );
+
+  const outfits: ScoredOutfit[] = [];
+  const pairs = Math.max(rankedTops.length, rankedBottoms.length);
+
+  for (let i = 0; i < pairs; i++) {
+    const top = rankedTops[i];
+    const bottom = rankedBottoms[i];
+    const items = [top, bottom].filter(Boolean) as RankedProduct[];
+    if (items.length === 0) continue;
+
+    const score =
+      items.reduce((sum, x) => sum + x.finalScore, 0) / items.length;
+
+    outfits.push({
+      items,
+      score,
+      reason: style.outfitText ?? style.styleZh ?? style.style,
+    });
+  }
+
+  return outfits;
+}
+
+// ── 格式化回傳訊息 ───────────────────────────────────────────────────────────
+// TODO：之後改成 LINE Flex Message（含商品圖），現在先給純文字。
+
+function formatPrice(price: number | null): string {
+  return price === null ? "" : ` NT$${Math.round(price).toLocaleString("en-US")}`;
+}
+
+function formatProduct(product: RankedProduct): string {
+  const name = product.title ?? `商品 ${product.productId}`;
+  const scores =
+    product.userScore === null
+      ? `符合度 ${product.queryScore.toFixed(2)}`
+      : `符合度 ${product.finalScore.toFixed(2)}（你的喜好 ${product.userScore.toFixed(2)} / 這次需求 ${product.queryScore.toFixed(2)}）`;
+
+  return [
+    `　${name}${formatPrice(product.priceTwd)}`,
+    product.productUrl ? `　${product.productUrl}` : null,
+    `　${scores}`,
+  ].filter(Boolean).join("\n");
+}
+
+async function formatRecommendation(
+  scoredOutfits: ScoredOutfit[],
+  classifiedResult: string,
+  _session: FashionSession,
+  _provider: string,
+  searchResult?: SearchResult
+): Promise<string> {
+  if (scoredOutfits.length === 0) {
+    // 排不出來時把原因講出來，不然使用者只會看到一串標籤
+    if (searchResult?.error) {
+      return `目前還挑不出商品：${searchResult.error}\n\n${classifiedResult}`;
+    }
+    return classifiedResult;
+  }
+
+  const style = searchResult?.style;
+  const header = style
+    ? `幫你抓了「${style.styleZh ?? style.style}」的搭配 ✨`
+    : "幫你挑了這幾套 ✨";
+
+  const body = scoredOutfits.map((outfit, i) => {
+    const lines = [`套餐 ${i + 1}`];
+    for (const item of outfit.items as RankedProduct[]) {
+      lines.push(formatProduct(item));
+    }
+    return lines.join("\n");
+  });
+
+  const footer =
+    searchResult?.userPrefs.scope === "user"
+      ? "（已參考你收藏的 IG 穿搭）"
+      : searchResult?.userPrefs.scope === "global"
+        ? "（你還沒有收藏紀錄，先用大家的收藏當參考 —— 分享幾則 IG 穿搭給我會更準）"
+        : "（還沒有收藏紀錄，這次只看你這句話的需求）";
+
+  return [header, "", ...body, "", footer].join("\n");
+}
+
+// ── 推薦主流程（串接三段 dummy） ─────────────────────────────────────────────
+// debug 模式時將各步驟說明 push 到 debugLines（由呼叫者傳入）
+async function runRecommendation(
+  classifiedResult: string,
+  session: FashionSession,
+  provider: string,
+  debugLines?: string[]
+): Promise<string> {
+  // Step A：搜尋候選服飾
+  debugLines?.push("[4/6] 🔍 搜尋候選服飾（searchCandidates）...");
+  const searchResult = await searchCandidates(classifiedResult, session);
+  debugLines?.push(`      ↳ ${searchResult.debugSummary}`);
+  debugLines?.push(`      ↳ 各 layer 候選數：${
+    Object.entries(searchResult.candidatesByLayer)
+      .map(([k, v]) => `${k}=${v.length}`)
+      .join(", ")
+  }`);
+
+  // Step B：評分排序
+  debugLines?.push("[5/6] 📊 評分排序（scoreOutfits）...");
+  const scoredOutfits = await scoreOutfits(searchResult, session);
+  debugLines?.push(
+    `      ↳ 最終套餐數：${scoredOutfits.length}` +
+    `（S_final = ${USER_WEIGHT} × S_user + ${QUERY_WEIGHT} × S_query）`
+  );
+
+  // Step C：格式化
+  debugLines?.push("[6/6] ✍️  格式化推薦結果（formatRecommendation）...");
+  const result = await formatRecommendation(
+    scoredOutfits, classifiedResult, session, provider, searchResult
+  );
+  debugLines?.push("      ↳ 完成，準備回傳");
+
+  return result;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 對外主函式
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -510,6 +874,10 @@ export async function generateChatReply(
   const onProgress = options?.onProgress;
   const debug = process.env.CHAT_DEBUG === "true";
 
+  // debug 模式：累積逐步說明，最後拼在回傳訊息最前面
+  const debugLines: string[] = [];
+  const D = (line: string) => { if (debug) debugLines.push(line); };
+
   const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
   const provider = explicit ||
     (process.env.OPENROUTER_API_KEY ? "openrouter" :
@@ -523,6 +891,8 @@ export async function generateChatReply(
   if (debug) {
     await onProgress?.(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
   }
+  D(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
+  D("");
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
   if (provider === "rules") {
@@ -535,27 +905,37 @@ export async function generateChatReply(
     return chatWithRules(text);
   }
 
-  // ── LLM 模式：session 管理 ──────────────────────────────────────────────────
+  // ── 使用者偏好 ──────────────────────────────────────────────────────────────
+  // 來源是 data/user-prefs/<userId>.md，由上一次 session 結束時萃取寫入。
   const userPrefs = loadUserPrefs(userId);
   if (userPrefs) {
-    console.log(`[chat] 已載入使用者偏好 userId=${userId}`);
+    console.log(`[chat] 已載入使用者偏好檔 userId=${userId}（${userPrefs.length} chars）`);
+    D(`ℹ️  已載入使用者偏好檔（${userPrefs.length} chars）`);
+  } else {
+    console.log(`[chat] 無使用者偏好檔 userId=${userId}（冷啟動）`);
+    D(`ℹ️  無使用者偏好檔（冷啟動）`);
   }
 
-  // 取得現有 session 或開啟新 session
+  // ── Session：取得現有的，沒有就開新的 ───────────────────────────────────────
+  // 注意：session 不會被 LLM 自動切換。只有使用者傳「結束這次討論」（webhook
+  // 呼叫 endFashionSession）或傳 IG 連結時才結束，在那之前一律視為同一次對話。
   let session: FashionSession;
   const existingSession = userId ? getActiveSession(userId) : null;
 
   if (!existingSession) {
-    // 新 session：以偏好檔作為初始累積需求
     const initialRequest = userPrefs ? `[使用者偏好紀錄]\n${userPrefs}` : "";
     session = startNewSession(userId ?? `anon_${Date.now()}`, initialRequest);
     console.log(`[chat] 開啟新 session，初始偏好 ${initialRequest.length} 字元`);
+    D(`[1/6] 🗂️  開啟新 session（${session.sessionId}），初始偏好 ${initialRequest.length} 字元`);
   } else {
     session = existingSession;
     console.log(`[chat] 繼續現有 session ${session.sessionId}，已有 ${session.turns.length} 輪`);
+    D(`[1/6] 🗂️  沿用 session ${session.sessionId}（已 ${session.turns.length} 輪）`);
   }
 
-  // 組裝本輪的累積需求（舊內容 + 本次輸入）
+  // ── 累積需求：舊內容 + 本次輸入 ─────────────────────────────────────────────
+  // 同一個 session 裡的每一句都會被帶進來一起分析，所以使用者可以分多次
+  // 慢慢補條件（「要去婚禮」→「預算三千」→「想低調一點」）。
   let inputText = text;
   if (nonIgUrls && nonIgUrls.length > 0) {
     inputText += `\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`;
@@ -566,8 +946,10 @@ export async function generateChatReply(
     : inputText;
 
   console.log(`[chat] 累積需求長度 ${accumulated.length} 字元，送 LLM 分析`);
+  D(`[2/6] 📚 累積需求 ${accumulated.length} 字元（本輪 ${inputText.length} 字元）`);
 
-  // ── 單次 LLM 分析（送累積需求） ──────────────────────────────────────────────
+  // ── 單次 LLM 分析（送累積需求）→ 解析出 [風格:] [item:] [keywords:] [price:] ─
+  D("[3/6] 🧠 意圖分類 + 風格匹配（CLASSIFIER_SYSTEM_PROMPT）...");
   const { content: classifiedResult, reason: classifyReason } = await callLLM(
     provider,
     CLASSIFIER_SYSTEM_PROMPT,
@@ -584,21 +966,38 @@ export async function generateChatReply(
 
   const intent = parseIntent(classifiedResult);
   console.log(`[chat] 分類結果 intent=${intent}: ${classifiedResult.slice(0, 200)}`);
+  D(`      ↳ intent=${intent}｜${classifiedResult.slice(0, 120).replace(/\n/g, " ")}`);
 
-  // ── 意圖不明：告訴我多一點 ────────────────────────────────────────────────
+  // ── 意圖不明：問清楚，不污染累積需求 ──────────────────────────────────────
   if (intent === "other") {
     // 不更新 accumulatedRequest（本次輸入不納入累積），也不記錄 turn
     return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
   }
 
-  // ── A / B / C 意圖：確認累積需求，記錄 turn，回傳分類結果 ─────────────────
+  // ── A / B / C：確認累積需求，記錄 turn ────────────────────────────────────
   session.accumulatedRequest = accumulated;
   session.updatedAt = Date.now();
-
   appendTurn(session, { role: "user", content: text, intent, timestamp: Date.now() });
-  appendTurn(session, { role: "assistant", content: classifiedResult, timestamp: Date.now() });
 
-  return classifiedResult;
+  // ── 分類結果是 pipeline 的「輸入」，不是回覆 ───────────────────────────────
+  // classifiedResult 裡的 [風格:] 會被 searchCandidates 拿去查 style_kb.jsonl，
+  // 撈出候選商品後由 rank.ts 算分，最後才格式化成使用者看到的推薦。
+  await onProgress?.("🔍 抓到適合的風格了，正在從商品庫挑搭配...");
+
+  const recommendation = await runRecommendation(
+    classifiedResult,
+    session,
+    provider,
+    debug ? debugLines : undefined
+  );
+
+  appendTurn(session, { role: "assistant", content: recommendation, timestamp: Date.now() });
+  console.log(`[chat] 完成 sessionId=${session.sessionId} 總 turns=${session.turns.length}`);
+
+  if (debug) {
+    return `${debugLines.join("\n")}\n────────────\n${recommendation}`;
+  }
+  return recommendation;
 }
 
 // ── 對外輔助函式 ──────────────────────────────────────────────────────────────

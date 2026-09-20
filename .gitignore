@@ -19,6 +19,11 @@ public/media/
 
 # 解析失敗時的除錯用 HTML
 debug_html/
+# Python pipeline（./pipeline）
+__pycache__/
+*.py[cod]
+pipeline/.venv/
+pipeline/outputs/
 
 # misc
 .DS_Store
@@ -29,3 +34,4 @@ next-env.d.ts
 data/style-kb/cache/
 data/style-kb/debug/
 data/style-kb/dry_hits.jsonl
+

@@ -3,7 +3,7 @@ import path from "node:path";
 import Link from "next/link";
 import Scatter from "./components/Scatter";
 import { CompassMotif, MagnoliaMotif, WreathMotif } from "./components/Motifs";
-import { getLinks } from "@/lib/links";
+import { listGarments } from "@/lib/garments";
 import { listTags } from "@/lib/tags";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +22,10 @@ function decorPhotos(): string[] {
 }
 
 export default async function WallPage() {
-  const [{ links }, { tags }] = await Promise.all([getLinks(), listTags()]);
+  const [{ garments }, { tags }] = await Promise.all([
+    listGarments(),
+    listTags(),
+  ]);
   const year = new Date().getFullYear();
 
   return (
@@ -51,7 +54,7 @@ export default async function WallPage() {
               <h2 className="entry__name">收藏夾</h2>
               <p className="entry__sub">Saved</p>
               <p className="entry__meta">
-                從 LINE 分享進來的貼文 · 共 {links.length} 則
+                從 LINE 分享進來的穿搭 · 共 {garments.length} 件單品
               </p>
             </div>
           </Link>

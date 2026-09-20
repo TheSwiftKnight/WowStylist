@@ -2,14 +2,16 @@ import crypto from "node:crypto";
 import { NextResponse, after } from "next/server";
 import { extractIgLinks } from "@/lib/ig";
 import { extractAnyUrls } from "@/lib/url";
-import { saveLinkBasic, enrichLink } from "@/lib/ingest";
+import { requestIngest, warmUp } from "@/lib/pipeline";
+import { createFailedJob } from "@/lib/jobs";
 import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "@/lib/chat";
 
 // LINE Messaging API webhook 接收端。
 // LINE 平台會把使用者傳給官方帳號的訊息 POST 到這個網址。
 //
 // 路由邏輯（三路）：
-//   1. 含 IG 連結  → 存 DB，回覆「已收藏」，背景補抓 IG 內容（after()）
+//   1. 含 IG 連結  → 回覆「正在分析」，背景送進分析 pipeline（after()）
+//                    並結束目前的穿搭 session（換話題了）
 //   2. 含其他 URL  → 交給 LLM，附上「偵測到非 IG 連結」的上下文
 //   3. 純文字      → 交給 LLM 做穿搭對話
 //
@@ -20,12 +22,21 @@ import { generateChatReply, endFashionSession, updateUserPreferenceFile } from "
 //     c. 每個 phase 完成後用 pushMessage 即時推送進度給使用者
 //     d. 最後推送實際推薦結果
 //
+// 路徑 1 是「兩層非同步」：
+//   LINE 秒收到回覆 → Next.js 背景送件 → Python 背景分析
+// 因為整條 pipeline（Apify + 每張圖一次 Claude Vision + 每件衣服一次 BGE-M3）
+// 要跑幾十秒到幾分鐘。使用者在網頁上看到的進度來自 ingest_jobs 表（GET /api/jobs）。
+//
 // 為什麼用 Push API 而不是 Reply API：
 //   replyToken 只能用一次、有效期約 30 秒，且在 after() 裡通常已過期。
 //   Push API 使用 userId，可以任何時候傳訊息，適合異步推送進度。
 //   注意：Push API 在 LINE 免費方案有月用量限制（每月 500 則）。
 
 export const dynamic = "force-dynamic";
+
+// 免費方案的分析服務冷啟動要一分鐘左右，送件會在 after() 裡等那麼久。
+// Vercel 預設的 function 上限比這短，所以放寬。
+export const maxDuration = 60;
 
 type LineTextMessageEvent = {
   type: string;
@@ -163,38 +174,48 @@ export async function POST(req: Request) {
       `[webhook] IG 連結 ${igLinks.length} 個、非 IG URL ${nonIgUrls.length} 個`
     );
 
-    // ── 路徑 1：有 IG 連結 → 收藏流程（邏輯不變） ──────────────
+    // ── 路徑 1：有 IG 連結 → 收藏 + 分析流程 ─────────────────────
     if (igLinks.length > 0) {
-      const senderName = userId ? await getSenderName(userId) : null;
+      const senderId = userId;
+      const senderName = senderId ? await getSenderName(senderId) : null;
 
-      const savedRows = [];
-      for (const link of igLinks) {
-        savedRows.push(
-          await saveLinkBasic(link, { sourceText: text, senderId: userId, senderName })
-        );
-      }
-      console.log(`[webhook] 已存入 ${savedRows.length} 筆`);
+      // 傳連結視為換一個話題：結束目前的穿搭 session，下一則文字會重新開始。
+      if (userId) endFashionSession(userId);
 
+      // 先回覆，再送件。LINE 的 replyToken 只有幾秒可以用，
+      // 而 requestIngest 要跨行程打 FastAPI，不能擋在回覆前面。
       if (event.replyToken) {
         await replyText(
           event.replyToken,
-          `收到！已收藏 ${savedRows.length} 個 IG 連結 ✅`
+          `收到！正在分析 ${igLinks.length} 則貼文的穿搭，完成後就會出現在收藏夾 ✅`
         );
       }
 
-      const pending = savedRows.filter((row) => row.fetchStatus !== "ok");
-      if (pending.length > 0) {
-        after(async () => {
-          for (const row of pending) {
-            try {
-              await enrichLink(row);
-            } catch (e) {
-              console.error(`[webhook] 抓取 ${row.shortcode} 內容時出錯:`, e);
-            }
+      after(async () => {
+        for (const link of igLinks) {
+          try {
+            const ticket = await requestIngest(link.url, {
+              sourceText: text,
+              senderId,
+              senderName,
+            });
+            console.log(
+              `[webhook] ${link.shortcode} 已送進 pipeline（job ${ticket.jobId}）`
+            );
+          } catch (e) {
+            console.error(`[webhook] ${link.shortcode} 送件失敗:`, e);
+
+            // 送不出去也要留下痕跡，不然前端完全不知道發生什麼事
+            await createFailedJob(link.url, String(e), {
+              shortcode: link.shortcode,
+              sourceText: text,
+              senderId,
+              senderName,
+            });
           }
-          console.log(`[webhook] 背景補抓完成 ${pending.length} 筆`);
-        });
-      }
+        }
+      });
+
       continue;
     }
 
