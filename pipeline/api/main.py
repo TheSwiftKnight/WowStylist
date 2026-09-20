@@ -20,6 +20,7 @@ Next.js 直接 SELECT 就好。這支只負責「跑」。
 
 import os
 import sys
+from contextlib import asynccontextmanager
 
 try:
     from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
@@ -44,9 +45,29 @@ except ModuleNotFoundError as error:
 # App
 # ============================================================
 
+# 服務啟動時先把卡住的 job 收掉。
+# Railway 重新部署、容器被回收、本機 Ctrl-C —— 正在跑的 BackgroundTask
+# 都會直接消失，job 會永遠停在 running，前端的進度條就一直轉。
+@asynccontextmanager
+async def lifespan(_app: "FastAPI"):
+    try:
+        stale = db_writer.fail_stale_jobs(
+            older_than_minutes=int(
+                os.getenv("STALE_JOB_MINUTES", "30")
+            )
+        )
+        if stale:
+            print(f"[startup] 收掉 {stale} 筆重啟前沒跑完的 job")
+    except Exception as error:
+        print(f"[startup] 清理 job 時出錯（不影響服務）：{error}")
+
+    yield
+
+
 app = FastAPI(
     title="WowStylist Fashion Pipeline",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 

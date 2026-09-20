@@ -1,5 +1,4 @@
-import { readFileSync } from "fs";
-import { join } from "path";
+import { loadUserPrefProfile } from "@/lib/prefs";
 import {
   loadStyleCandidates,
   loadCandidateProducts,
@@ -433,18 +432,6 @@ function chatWithRules(text: string): string {
   return "我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
 }
 
-// ── 讀取使用者偏好檔 ──────────────────────────────────────────────────────────
-function loadUserPrefs(userId: string | null): string | null {
-  if (!userId) return null;
-  try {
-    const filePath = join(process.cwd(), "data", "user-prefs", `${userId}.md`);
-    const content = readFileSync(filePath, "utf-8").trim();
-    return content || null;
-  } catch {
-    return null;
-  }
-}
-
 // ── 訊息組裝 ─────────────────────────────────────────────────────────────────
 
 function buildFirstTurnMessage(
@@ -853,12 +840,27 @@ export async function generateChatReply(
   D(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
   D("");
 
-  const userPrefs = loadUserPrefs(userId);
-  if (userPrefs) {
-    console.log(`[chat] 已載入使用者偏好 userId=${userId}`);
-    D(`ℹ️  已載入使用者偏好檔 (${userPrefs.length} chars)`);
+  // 偏好來自 IG RDS（使用者分享進來、pipeline 拆出來的單品），
+  // 不是本機檔案。詳見 src/lib/prefs.ts。
+  const prefProfile = await loadUserPrefProfile(userId);
+  const userPrefs = prefProfile.text;
+
+  if (prefProfile.scope === "file") {
+    console.log(`[chat] 使用者偏好：手寫覆寫檔 userId=${userId}`);
+    D(`ℹ️  使用者偏好：手寫覆寫檔（${userPrefs?.length ?? 0} chars）`);
+  } else if (prefProfile.scope === "user") {
+    console.log(
+      `[chat] 使用者偏好：本人收藏 ${prefProfile.garmentCount} 件 userId=${userId}`
+    );
+    D(`ℹ️  使用者偏好：你收藏的 ${prefProfile.garmentCount} 件單品`);
+  } else if (prefProfile.scope === "global") {
+    console.log(`[chat] 使用者偏好：全體收藏 ${prefProfile.garmentCount} 件`);
+    D(
+      `ℹ️  使用者偏好：你還沒有收藏，先用全體的 ` +
+      `${prefProfile.garmentCount} 件當參考`
+    );
   } else {
-    D(`ℹ️  無使用者偏好檔（冷啟動）`);
+    D(`ℹ️  無使用者偏好（資料庫裡還沒有任何 IG 單品，或連不上）`);
   }
 
   // ──────────────────────────────────────────────────────────────────────────

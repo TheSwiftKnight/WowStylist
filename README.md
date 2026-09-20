@@ -97,7 +97,11 @@ npm run dev                 # http://localhost:3000
 
 沒設定 LINE 之前也能玩：打開 `/favorites`，用最上面的輸入框貼任何 IG 連結。
 
-LINE bot 完整設定步驟 → 見 **SETUP.md**。
+LINE bot 的設定步驟（Developers Console 的兩把鑰匙、關自動回覆、ngrok、
+填 webhook URL）見 LINE 官方文件；本專案的 webhook 路徑是
+`/api/line/webhook`。
+
+不想一直開著本機 server → **pipeline/README.md** 的「部署到 Railway」。
 分析那側的細節（檔案分工、直接用 CLI 測、成本）→ 見 **pipeline/README.md**。
 
 ## 專案結構

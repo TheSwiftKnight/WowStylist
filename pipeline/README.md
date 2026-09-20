@@ -108,6 +108,112 @@ RDS endpoint 從外面解出這種 IP，代表這台的 **Publicly accessible �
 
 解出來是公開 IP 但還是 timeout → 那就是 security group 沒開你的 IP，走第 1 點的後半段。
 
+## 部署到 Railway
+
+不想一直開著本機 uvicorn + ngrok 的話，把這個資料夾丟上 Railway。
+`Dockerfile` 和 `railway.json` 都在這裡了。
+
+### 1. 建 service
+
+1. [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**
+   → 選 `WowStylist`
+2. 建好之後進 **Service → Settings**：
+   - **Root Directory** 填 `pipeline` ← **這步最關鍵**。
+     不填的話 Railway 會以為整個 repo 是 Next.js，蓋出來的東西跑不起來。
+   - **Builder** 會自己偵測到 `pipeline/Dockerfile`；沒有的話手動選 Dockerfile。
+3. **Settings → Networking → Generate Domain**，拿到
+   `https://xxxx.up.railway.app`。
+
+`PORT` 是 Railway 給的，Dockerfile 已經吃了，不用自己設。
+
+### 2. 環境變數
+
+**Service → Variables**，貼這些（值照你本機 `.env`）：
+
+```
+APIFY_TOKEN
+ANTHROPIC_API_KEY
+HF_TOKEN
+
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+DB_SSLMODE
+FASHION_TABLE
+
+PRODUCTS_DB_HOST
+PRODUCTS_DB_PORT
+PRODUCTS_DB_NAME
+PRODUCTS_DB_USER
+PRODUCTS_DB_PASSWORD
+PRODUCTS_DB_SSLMODE
+PRODUCTS_TABLE
+
+PIPELINE_TOKEN
+ALLOWED_ORIGINS
+GARMENT_DEDUP_THRESHOLD
+```
+
+注意：
+
+- **`PIPELINE_TOKEN` 這次一定要設。** 本機留空沒差，但 Railway 的網址是公開的，
+  不設等於誰都能叫你的 Apify 和 Claude 額度。隨便產一串：
+  `openssl rand -hex 24`。Next.js 那邊（Vercel 和本機 `.env`）要填一樣的。
+- `ALLOWED_ORIGINS` 填 `https://wow-stylist.vercel.app`（有多個就逗號分隔）。
+- Railway 的 Variables 不吃 `KEY="value"` 的引號，貼值就好。
+
+### 3. RDS 要讓 Railway 連得進來
+
+Railway 沒有固定 IP，所以兩台 RDS 的 security group 都要開：
+
+> EC2 → Security Groups → 該 RDS 的 SG → Inbound rules → Add rule
+> → PostgreSQL / 5432 / `0.0.0.0/0`
+
+密碼務必夠強 —— 這等於把資料庫開到公網。demo 完記得改回來或換密碼。
+
+### 4. 接上 Next.js
+
+Vercel → Project → Settings → Environment Variables：
+
+```
+PIPELINE_API_URL = https://xxxx.up.railway.app
+PIPELINE_TOKEN   = （跟 Railway 上同一串）
+```
+
+改完要 **Redeploy** 才生效。本機 `.env` 想打 Railway 的話一樣改這兩個。
+
+### 5. 驗
+
+```bash
+curl https://xxxx.up.railway.app/health
+```
+
+`ok: true`、`database.missing_columns` 是空的、`can_upsert` 是 true 就對了。
+然後開 `https://wow-stylist.vercel.app/api/health`，`checks.pipeline.ok`
+要是 true。再從 LINE 丟一則貼文，`npm run db:show` 看 job 有沒有跑起來。
+
+### 會踩到的地方
+
+| 症狀 | 原因 |
+|---|---|
+| build 失敗，log 裡在跑 `npm install` | Root Directory 沒填 `pipeline` |
+| deploy 成功但 healthcheck 一直失敗 | 多半是 `HF_TOKEN` 沒設 —— `fashion_encoder.py` 在 import 時就 raise，uvicorn 起不來。看 Deploy Logs 的第一段 |
+| `/health` 回 `database.ok: false` | RDS security group 沒開 `0.0.0.0/0` |
+| `/ingest` 回 401 | `PIPELINE_TOKEN` 兩邊不一樣 |
+| job 永遠停在 running | 重新部署時把正在跑的 task 砍掉了。服務啟動會自動把超過 30 分鐘的收成 failed（`STALE_JOB_MINUTES` 可調） |
+
+### 費用與限制
+
+- Reel 一則會跑十幾次 Claude Vision，單次要一到數分鐘。Railway 免費額度是
+  **執行時間**計費，這種偶發的工作量很省，但容器會一直開著，記得看用量。
+- 容器的檔案系統是暫時的。下載的圖片和影格寫在 `/tmp`，重開就沒了 ——
+  無所謂，成品（含圖片 bytea）都進 RDS 了。
+- 目前是單一 replica、用 FastAPI 的 BackgroundTasks。同時丟很多連結會塞在
+  同一個行程裡排隊。要更穩就得把 job queue 拉出來（Redis + worker），
+  但 demo 用不到。
+
 ## 不開服務也能直接測
 
 在專案根目錄：

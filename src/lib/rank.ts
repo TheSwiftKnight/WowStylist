@@ -519,13 +519,17 @@ export async function loadUserPreferenceEmbeddings(
   try {
     if (userId) {
       const rows = await query<{ embedding: unknown }>(
-        `SELECT DISTINCT ON (f.id) f.embedding
+        // 子查詢而不是 JOIN —— 同一則貼文重送過的話 ingest_jobs 會有多列，
+        // JOIN 會讓同一件衣服在平均裡被算好幾次。
+        `SELECT f.embedding
            FROM ${fashionTable} f
-           JOIN ingest_jobs j ON j.shortcode = f.shortcode
           WHERE f.source = 'instagram'
             AND f.category = $1
-            AND j.sender_id = $2
             AND f.embedding IS NOT NULL
+            AND f.shortcode IN (
+              SELECT shortcode FROM ingest_jobs
+               WHERE sender_id = $2 AND shortcode IS NOT NULL
+            )
           ORDER BY f.id DESC
           LIMIT $3`,
         [category, userId, limit]
