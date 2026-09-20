@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fashionTable, query } from "@/lib/rds";
+import { listStyles, loadStyleCandidates, resolveProductSource } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
 
@@ -183,17 +184,110 @@ async function checkPipeline(onVercel: boolean): Promise<Check> {
   }
 }
 
+// ── 推薦引擎（style_kb + 商品向量 + 使用者偏好）─────────────
+async function checkRecommender(): Promise<Check> {
+  const styles = listStyles();
+
+  if (styles.length === 0) {
+    return {
+      ok: false,
+      detail: "讀不到 data/style-kb/style_kb.jsonl",
+    };
+  }
+
+  // 拿第一個風格當樣本，看 matches 有沒有真的寫進去
+  const sample = loadStyleCandidates(styles[0].style);
+
+  if (!sample) {
+    return {
+      ok: false,
+      styleCount: styles.length,
+      detail:
+        "style_kb.jsonl 裡沒有 matches 欄位 —— 應該覆寫成 " +
+        "build_style_lookup.py 產出的 style_kb_matched.jsonl",
+    };
+  }
+
+  const source = await resolveProductSource();
+
+  if (!source) {
+    return {
+      ok: false,
+      styleCount: styles.length,
+      sampleStyle: {
+        style: sample.style,
+        top: sample.top.length,
+        bottom: sample.bottom.length,
+      },
+      detail:
+        "找不到商品向量的來源：fashion_items 沒有 source='product' 的列，" +
+        "也沒有一張帶 embedding 的 products 表。",
+      hint:
+        "商品那批要嘛以 source='product' 寫進 fashion_items，" +
+        "要嘛在同一個資料庫裡有 products 表。" +
+        "如果商品在另一台 RDS，那需要第二組連線設定。",
+    };
+  }
+
+  let productCount: number | null = null;
+  try {
+    const conditions = ["embedding IS NOT NULL"];
+    if (source.sourceFilter) conditions.push("source = 'product'");
+
+    const [row] = await query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${source.table}
+        WHERE ${conditions.join(" AND ")}`
+    );
+    productCount = Number(row?.n ?? 0);
+  } catch {
+    productCount = null;
+  }
+
+  let prefCount: number | null = null;
+  try {
+    const [row] = await query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${fashionTable}
+        WHERE source = 'instagram' AND embedding IS NOT NULL`
+    );
+    prefCount = Number(row?.n ?? 0);
+  } catch {
+    prefCount = null;
+  }
+
+  return {
+    ok: true,
+    styleCount: styles.length,
+    sampleStyle: {
+      style: sample.style,
+      styleZh: sample.styleZh,
+      top: sample.top.length,
+      bottom: sample.bottom.length,
+    },
+    productSource: {
+      table: source.table,
+      idColumn: source.idColumn,
+      sourceFilter: source.sourceFilter,
+      bottomCategory: source.bottomCategory,
+      productsWithEmbedding: productCount,
+    },
+    // 使用者偏好的來源：pipeline 寫進來的 IG 單品
+    igGarmentsWithEmbedding: prefCount,
+    hfTokenSet: Boolean(process.env.HF_TOKEN),
+  };
+}
+
 export async function GET() {
   const onVercel = Boolean(process.env.VERCEL);
 
   const env = checkEnv();
 
-  const [database, pipeline] = await Promise.all([
+  const [database, pipeline, recommender] = await Promise.all([
     checkDatabase(),
     checkPipeline(onVercel),
+    checkRecommender().catch((err) => ({ ok: false, detail: String(err) })),
   ]);
 
-  const checks = { env, database, pipeline };
+  const checks = { env, database, pipeline, recommender };
 
   const problems = Object.entries(checks)
     .filter(([, check]) => !check.ok)

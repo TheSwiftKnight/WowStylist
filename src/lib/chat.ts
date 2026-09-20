@@ -1,5 +1,20 @@
 import { readFileSync } from "fs";
 import { join } from "path";
+import {
+  loadStyleCandidates,
+  loadCandidateProducts,
+  loadUserPreferenceEmbeddings,
+  embedQuery,
+  rankCategory,
+  resolveProductSource,
+  TOP_M,
+  USER_WEIGHT,
+  QUERY_WEIGHT,
+  type StyleCandidates,
+  type StyleMatch,
+  type Product,
+  type RankedProduct,
+} from "@/lib/rank";
 
 // 打字對話的核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
@@ -493,61 +508,165 @@ interface SearchResult {
   queryEmbedding: number[] | null;
   // debug 摘要（顯示解析出的標籤）
   debugSummary: string;
+  // ── 以下是接上 rank.ts 之後新增的 ──
+  style: StyleCandidates | null;
+  products: Map<number, Product>;
+  userPrefs: { top: number[][]; bottom: number[][]; scope: string };
+  error: string | null;
 }
+
+const EMPTY_LAYERS = { top: [], bottom: [], outer: [], footwear: [] };
+
+function emptySearchResult(
+  debugSummary: string,
+  error: string | null
+): SearchResult {
+  return {
+    candidatesByLayer: { ...EMPTY_LAYERS },
+    queryEmbedding: null,
+    debugSummary,
+    style: null,
+    products: new Map(),
+    userPrefs: { top: [], bottom: [], scope: "none" },
+    error,
+  };
+}
+
+// ── 搜尋候選服飾 ─────────────────────────────────────────────────────────────
+// 輸入：分類器輸出（含 [keywords:] [item:] [風格:] [price:] 標籤）
+// 輸出：每個 layer 的候選商品 + query embedding
+//
+// 流程：
+//   1. 解析標籤
+//   2. [風格:] → data/style-kb/style_kb.jsonl 查出離線算好的候選商品
+//      （build_style_lookup.py 跑的，demo 期間商品庫和風格庫都不會變）
+//   3. 撈這幾十個候選的向量 + 使用者長期偏好向量
+//   4. 把這次查詢編成向量
 
 async function searchCandidates(
   classifiedResult: string,
-  _session: FashionSession
+  session: FashionSession
 ): Promise<SearchResult> {
-  // ── TODO：替換以下 dummy 實作 ──────────────────────────────────────────────
   const keywordsMatch = classifiedResult.match(/\[keywords:\s*([^\]]+)\]/i);
   const itemMatch     = classifiedResult.match(/\[item:\s*([^\]]+)\]/i);
   const styleMatch    = classifiedResult.match(/\[風格:\s*([^\]]+)\]/);
   const priceMatch    = classifiedResult.match(/\[price:\s*([^\]]+)\]/i);
 
-  const keywords = keywordsMatch?.[1]?.trim() ?? "(未解析到)";
+  const keywords = keywordsMatch?.[1]?.trim() ?? null;
   const item     = itemMatch?.[1]?.trim()     ?? null;
-  const style    = styleMatch?.[1]?.trim()    ?? null;
+  const styleTag = styleMatch?.[1]?.trim()    ?? null;
   const price    = priceMatch?.[1]?.trim()    ?? null;
 
-  const debugSummary = [
-    `keywords: ${keywords}`,
-    item  ? `item: ${item}`   : null,
-    style ? `style: ${style}` : null,
-    price ? `price: ${price}` : null,
-  ].filter(Boolean).join(" | ");
+  const debugParts = [
+    `keywords: ${keywords ?? "(未解析到)"}`,
+    item  ? `item: ${item}`       : null,
+    styleTag ? `style: ${styleTag}` : null,
+    price ? `price: ${price}`     : null,
+  ].filter(Boolean);
 
-  console.log(`[chat] searchCandidates (dummy) ${debugSummary}`);
+  // 分類器可能一次給好幾個風格，取第一個在 KB 裡找得到的
+  const styleNames = (styleTag ?? "")
+    .split(/[,，、]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  return {
-    candidatesByLayer: { top: [], bottom: [], outer: [], footwear: [] },
-    queryEmbedding: null,
-    debugSummary,
-  };
-  // ── TODO 結束 ───────────────────────────────────────────────────────────────
+  let style: StyleCandidates | null = null;
+  for (const name of styleNames) {
+    style = loadStyleCandidates(name);
+    if (style) break;
+  }
+
+  if (!style) {
+    const reason = styleNames.length === 0
+      ? "分類器沒有給 [風格:] 標籤"
+      : `style_kb.jsonl 裡找不到：${styleNames.join(" / ")}`;
+    console.log(`[chat] searchCandidates 跳過排序 — ${reason}`);
+    return emptySearchResult(
+      [...debugParts, reason].join(" | "),
+      reason
+    );
+  }
+
+  debugParts.push(`命中風格: ${style.styleZh ?? style.style}`);
+
+  // query 文字：關鍵字最能代表這次的需求，沒有的話退回 item / 原句
+  const queryText =
+    keywords ?? item ?? classifiedResult.replace(/\[[^\]]*\]/g, "").trim();
+
+  const productIds = [
+    ...style.top.map((c) => c.product_id),
+    ...style.bottom.map((c) => c.product_id),
+  ];
+
+  try {
+    const [products, queryEmbedding, topPrefs, bottomPrefs] = await Promise.all([
+      loadCandidateProducts(productIds),
+      embedQuery(queryText),
+      loadUserPreferenceEmbeddings(session.userId, "top"),
+      loadUserPreferenceEmbeddings(session.userId, "bottom"),
+    ]);
+
+    if (products.size === 0) {
+      const source = await resolveProductSource();
+      const reason = source
+        ? `${source.table} 裡找不到這 ${productIds.length} 個候選商品的 embedding`
+        : "找不到商品向量來源（fashion_items 沒有 source='product' 的列，也沒有 products 表）";
+      console.warn(`[chat] searchCandidates: ${reason}`);
+      return emptySearchResult([...debugParts, reason].join(" | "), reason);
+    }
+
+    const scope =
+      topPrefs.scope === "user" || bottomPrefs.scope === "user"
+        ? "user"
+        : topPrefs.scope === "global" || bottomPrefs.scope === "global"
+          ? "global"
+          : "none";
+
+    debugParts.push(
+      `候選 top=${style.top.length} bottom=${style.bottom.length}`,
+      `商品向量 ${products.size} 筆`,
+      `偏好向量 top=${topPrefs.embeddings.length} bottom=${bottomPrefs.embeddings.length}（${
+        scope === "user" ? "本人收藏" : scope === "global" ? "全體收藏" : "無"
+      }）`
+    );
+
+    return {
+      candidatesByLayer: {
+        top: style.top,
+        bottom: style.bottom,
+        outer: [],
+        footwear: [],
+      },
+      queryEmbedding,
+      debugSummary: debugParts.join(" | "),
+      style,
+      products,
+      userPrefs: {
+        top: topPrefs.embeddings,
+        bottom: bottomPrefs.embeddings,
+        scope,
+      },
+      error: null,
+    };
+  } catch (err) {
+    const reason = String(err);
+    console.error("[chat] searchCandidates 失敗：", err);
+    return emptySearchResult([...debugParts, reason].join(" | "), reason);
+  }
 }
 
-// ── 評分與排序（TODO：實作 Beam Search + 三分項評分） ─────────────────────────
-// 輸入：searchCandidates 結果 + 當前 session
-// 輸出：評分後前 3~5 套完整穿搭
+// ── 評分與排序 ───────────────────────────────────────────────────────────────
+// S_final = 0.67 × S_user + 0.33 × S_query
+//   S_user  = 商品向量跟「使用者收藏的 IG 單品」的平均 cosine
+//   S_query = 商品向量跟這次查詢的 cosine
+// 沒有收藏紀錄時 S_final = S_query（見 rank.ts 的 finalScore）
 //
-// TODO 實作步驟：
-//   Beam Search：
-//     Round 1: top × bottom → 保留前 10~15 套
-//     Round 2: + outer       → 保留前 10~15 套
-//     Round 3: + footwear    → 保留前 10~15 套
-//   評分公式（每件商品）：
-//     S = α·S_query + β·S_user + γ·S_compatibility
-//     S_query  = cosine(商品向量, query_embedding)
-//     S_user   = cosine(商品向量, user_vec)         ← 從 user_profile 取
-//     S_compat = cosine(商品向量, rule_embedding)   ← 從 compatible_pair 取
+// 目前一套 = 一件上衣 + 一件下著，按名次配對。
+// 之後要做 Beam Search / 相容性分數的話，從這裡往下加。
 
 interface ScoredOutfit {
-  // 每套穿搭的商品清單（TODO：替換成實際型別）
   items: CandidateItem[];
-  // 套餐總分
   score: number;
-  // 搭配理由（TODO：由 LLM 生成）
   reason: string;
 }
 
@@ -555,40 +674,110 @@ async function scoreOutfits(
   searchResult: SearchResult,
   _session: FashionSession
 ): Promise<ScoredOutfit[]> {
-  // ── TODO：替換以下 dummy 實作 ──────────────────────────────────────────────
-  const totalCandidates = Object.values(searchResult.candidatesByLayer)
-    .reduce((sum, arr) => sum + arr.length, 0);
+  const { queryEmbedding, products, userPrefs, style } = searchResult;
 
-  console.log(`[chat] scoreOutfits (dummy) totalCandidates=${totalCandidates}`);
+  if (!style || !queryEmbedding || products.size === 0) return [];
 
-  return []; // dummy：回傳空陣列，等實作 Beam Search 後替換
-  // ── TODO 結束 ───────────────────────────────────────────────────────────────
+  const rankedTops = rankCategory(
+    searchResult.candidatesByLayer.top as StyleMatch[],
+    products,
+    userPrefs.top,
+    queryEmbedding,
+    TOP_M
+  );
+
+  const rankedBottoms = rankCategory(
+    searchResult.candidatesByLayer.bottom as StyleMatch[],
+    products,
+    userPrefs.bottom,
+    queryEmbedding,
+    TOP_M
+  );
+
+  console.log(
+    `[chat] scoreOutfits top=${rankedTops.length} bottom=${rankedBottoms.length} ` +
+    `weights=${USER_WEIGHT}/${QUERY_WEIGHT} prefScope=${userPrefs.scope}`
+  );
+
+  const outfits: ScoredOutfit[] = [];
+  const pairs = Math.max(rankedTops.length, rankedBottoms.length);
+
+  for (let i = 0; i < pairs; i++) {
+    const top = rankedTops[i];
+    const bottom = rankedBottoms[i];
+    const items = [top, bottom].filter(Boolean) as RankedProduct[];
+    if (items.length === 0) continue;
+
+    const score =
+      items.reduce((sum, x) => sum + x.finalScore, 0) / items.length;
+
+    outfits.push({
+      items,
+      score,
+      reason: style.outfitText ?? style.styleZh ?? style.style,
+    });
+  }
+
+  return outfits;
 }
 
-// ── 格式化回傳訊息（TODO：實作 LINE Flex Message） ────────────────────────────
-// 輸入：scoreOutfits 結果 + 分類結果 + session + provider
-// 輸出：對 LINE 使用者顯示的最終字串（或 JSON Flex Message）
-//
-// TODO 實作步驟：
-//   1. 用 LLM 根據 rule 內容生成搭配理由（中文）
-//   2. 組裝 LINE Flex Message（含商品圖片、名稱、價格、連結、說明）
-//   3. 若 scoredOutfits 為空，回傳友善的找不到訊息
+// ── 格式化回傳訊息 ───────────────────────────────────────────────────────────
+// TODO：之後改成 LINE Flex Message（含商品圖），現在先給純文字。
+
+function formatPrice(price: number | null): string {
+  return price === null ? "" : ` NT$${Math.round(price).toLocaleString("en-US")}`;
+}
+
+function formatProduct(product: RankedProduct): string {
+  const name = product.title ?? `商品 ${product.productId}`;
+  const scores =
+    product.userScore === null
+      ? `符合度 ${product.queryScore.toFixed(2)}`
+      : `符合度 ${product.finalScore.toFixed(2)}（你的喜好 ${product.userScore.toFixed(2)} / 這次需求 ${product.queryScore.toFixed(2)}）`;
+
+  return [
+    `　${name}${formatPrice(product.priceTwd)}`,
+    product.productUrl ? `　${product.productUrl}` : null,
+    `　${scores}`,
+  ].filter(Boolean).join("\n");
+}
 
 async function formatRecommendation(
   scoredOutfits: ScoredOutfit[],
   classifiedResult: string,
   _session: FashionSession,
-  _provider: string
+  _provider: string,
+  searchResult?: SearchResult
 ): Promise<string> {
-  // ── TODO：替換以下 dummy 實作 ──────────────────────────────────────────────
   if (scoredOutfits.length === 0) {
-    // placeholder：直接回傳分類器的結構化輸出，讓開發者看到標籤解析結果
+    // 排不出來時把原因講出來，不然使用者只會看到一串標籤
+    if (searchResult?.error) {
+      return `目前還挑不出商品：${searchResult.error}\n\n${classifiedResult}`;
+    }
     return classifiedResult;
   }
-  return scoredOutfits
-    .map((o, i) => `套餐 ${i + 1}（分數 ${o.score.toFixed(3)}）：${o.reason}`)
-    .join("\n\n");
-  // ── TODO 結束 ───────────────────────────────────────────────────────────────
+
+  const style = searchResult?.style;
+  const header = style
+    ? `幫你抓了「${style.styleZh ?? style.style}」的搭配 ✨`
+    : "幫你挑了這幾套 ✨";
+
+  const body = scoredOutfits.map((outfit, i) => {
+    const lines = [`套餐 ${i + 1}`];
+    for (const item of outfit.items as RankedProduct[]) {
+      lines.push(formatProduct(item));
+    }
+    return lines.join("\n");
+  });
+
+  const footer =
+    searchResult?.userPrefs.scope === "user"
+      ? "（已參考你收藏的 IG 穿搭）"
+      : searchResult?.userPrefs.scope === "global"
+        ? "（你還沒有收藏紀錄，先用大家的收藏當參考 —— 分享幾則 IG 穿搭給我會更準）"
+        : "（還沒有收藏紀錄，這次只看你這句話的需求）";
+
+  return [header, "", ...body, "", footer].join("\n");
 }
 
 // ── 推薦主流程（串接三段 dummy） ─────────────────────────────────────────────
@@ -607,16 +796,21 @@ async function runRecommendation(
     Object.entries(searchResult.candidatesByLayer)
       .map(([k, v]) => `${k}=${v.length}`)
       .join(", ")
-  }（dummy，實作後會有真實資料）`);
+  }`);
 
   // Step B：評分排序
-  debugLines?.push("[5/6] 📊 評分排序（scoreOutfits / Beam Search）...");
+  debugLines?.push("[5/6] 📊 評分排序（scoreOutfits）...");
   const scoredOutfits = await scoreOutfits(searchResult, session);
-  debugLines?.push(`      ↳ 最終套餐數：${scoredOutfits.length}（dummy，實作後會有 3~5 套）`);
+  debugLines?.push(
+    `      ↳ 最終套餐數：${scoredOutfits.length}` +
+    `（S_final = ${USER_WEIGHT} × S_user + ${QUERY_WEIGHT} × S_query）`
+  );
 
   // Step C：格式化
   debugLines?.push("[6/6] ✍️  格式化推薦結果（formatRecommendation）...");
-  const result = await formatRecommendation(scoredOutfits, classifiedResult, session, provider);
+  const result = await formatRecommendation(
+    scoredOutfits, classifiedResult, session, provider, searchResult
+  );
   debugLines?.push("      ↳ 完成，準備回傳");
 
   return result;
