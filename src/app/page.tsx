@@ -115,7 +115,7 @@ export default async function WallPage() {
               style={{ ["--plate" as string]: "#f0e7d5" }}
             >
               <WreathMotif />
-              <span className="entry__strip entry__strip--soon">籌備中</span>
+              <span className="entry__strip">{year} in review</span>
             </div>
             <div className="entry__caption">
               <h2 className="entry__name">年度總結</h2>

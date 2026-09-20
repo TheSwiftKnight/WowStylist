@@ -2,13 +2,17 @@ import Link from "next/link";
 import TagCloud from "./TagCloud";
 import SyncTagsButton from "../components/SyncTagsButton";
 import { listTags } from "@/lib/tags";
+import { countUntagged } from "@/lib/styleTagger";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "style 風向標 — WowStylist" };
 
 export default async function CompassPage() {
-  const { tags, isMock } = await listTags();
+  const [{ tags, isMock }, untagged] = await Promise.all([
+    listTags(),
+    countUntagged(),
+  ]);
 
   return (
     <main className="board board--fixed">
@@ -25,7 +29,7 @@ export default async function CompassPage() {
             style <em>風向標</em>
           </h1>
           <p className="page-note">
-            這些是目前系統讀到的你。點一下改名字、點兩下換分類、右邊的 × 刪掉。
+            這些是 Claude 讀你收藏的每件單品長出來的。點一下改名字、點兩下換分類、右邊的 × 刪掉。
           </p>
           <div className="page-head__meta compass__legend">
             <span>
@@ -50,7 +54,7 @@ export default async function CompassPage() {
 
         <footer className="compass__foot">
           <span>依比重排序，越前面代表在你收藏裡出現得越多</span>
-          <SyncTagsButton />
+          <SyncTagsButton untagged={untagged} />
           {isMock ? (
             <span className="mock-flag">示範資料 · 資料庫連不上，改不動</span>
           ) : (
