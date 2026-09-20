@@ -69,6 +69,30 @@ export async function GET(req: Request) {
     LINE_CHANNEL_ACCESS_TOKEN: process.env.LINE_CHANNEL_ACCESS_TOKEN ? "已設定" : "❌ 沒有",
   };
 
+  // 直接把明顯的設定錯誤講出來，不要讓人自己對著 env 猜
+  const diagnosis: string[] = [];
+  if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+    diagnosis.push(
+      "❌ 沒有任何 LLM 金鑰（ANTHROPIC_API_KEY / OPENAI_API_KEY）→ " +
+      "會降級成關鍵字規則，回覆是零延遲的罐頭句、也不會有推薦卡片。這是最優先要修的。"
+    );
+  }
+  if ((process.env.CHAT_PROVIDER || "").toLowerCase() === "openrouter") {
+    diagnosis.push(
+      "⚠️ CHAT_PROVIDER=openrouter 是舊值（Nemotron 已移除），程式會自動改用 anthropic。" +
+      "建議直接把這個環境變數刪掉或改成 anthropic，避免誤導。"
+    );
+  }
+  if (!process.env.HF_TOKEN) {
+    diagnosis.push("❌ 沒有 HF_TOKEN → embedQuery 會丟錯，排不出商品（會變成純文字的錯誤訊息）。");
+  }
+  if (!process.env.DB_HOST) {
+    diagnosis.push("❌ 沒有 DB_HOST → 撈不到商品向量與使用者偏好。");
+  }
+  if (!siteUrl()) {
+    diagnosis.push("⚠️ 沒有 SITE_URL → Flex 卡片會沒有圖（LINE 要用公開 HTTPS 網址抓圖）。");
+  }
+
   let styleCount = 0;
   try {
     styleCount = listStyleProfiles().length;
@@ -99,6 +123,7 @@ export async function GET(req: Request) {
       ok: true,
       query: text,
       totalMs: Date.now() - t0,
+      diagnosis: diagnosis.length ? diagnosis : ["✅ 環境變數看起來都齊了"],
       env,
       styleCount,
       marks,
@@ -124,6 +149,7 @@ export async function GET(req: Request) {
         ok: false,
         query: text,
         totalMs: Date.now() - t0,
+        diagnosis,
         env,
         styleCount,
         marks,
