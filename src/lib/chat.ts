@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { siteUrl } from "@/lib/url";
 import { join } from "path";
 import {
   loadStyleCandidates,
@@ -448,7 +449,8 @@ function chatWithRules(text: string): string {
     return "使用方式：\n1️⃣ 收藏穿搭 → 把 Instagram 貼文/Reels 連結傳過來\n2️⃣ 穿搭建議 → 用文字描述場合、風格、預算，例如「秋天約會穿搭，預算 2000」\n3️⃣ 查看收藏 → 打「收藏夾」或到網頁瀏覽 ✨";
   }
   if (/收藏夾|我的收藏|看收藏/.test(t)) {
-    const url = process.env.SITE_URL ? `${process.env.SITE_URL}/favorites` : "網頁收藏夾";
+    const base = siteUrl();
+    const url = base ? `${base}/favorites` : "網頁收藏夾";
     return `你的 IG 穿搭收藏在這裡 👉 ${url}`;
   }
   if (/你好|嗨|哈囉|hi|hello/.test(t)) {

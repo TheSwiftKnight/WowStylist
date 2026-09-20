@@ -81,7 +81,20 @@ async function cmdList() {
 
 async function cmdCreate() {
   const cfgRaw = await fs.readFile(path.join(process.cwd(), "richmenu/config.json"), "utf8");
-  const siteUrl = process.env.SITE_URL || "";
+  // LINE 的 uri action 只吃 https://（沒有 scheme 會回 "invalid uri scheme"），
+  // 但 .env 裡常常只寫網域，所以這裡自己補起來。
+  const rawSite = (process.env.SITE_URL || "").trim().replace(/\/+$/, "");
+  const siteUrl = !rawSite
+    ? ""
+    : /^https:\/\//i.test(rawSite)
+      ? rawSite
+      : /^http:\/\//i.test(rawSite)
+        ? rawSite.replace(/^http:/i, "https:")
+        : `https://${rawSite}`;
+
+  if (siteUrl && siteUrl !== rawSite) {
+    console.log(`SITE_URL 補上 scheme：${rawSite} → ${siteUrl}`);
+  }
   if (cfgRaw.includes("{SITE_URL}") && !siteUrl) {
     console.error("config.json 用到 {SITE_URL}，但 .env 沒設 SITE_URL");
     process.exit(1);

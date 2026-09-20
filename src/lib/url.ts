@@ -15,3 +15,20 @@ export function extractAnyUrls(text: string): string[] {
 export function containsUrl(text: string): boolean {
   return /https?:\/\/\S+/.test(text);
 }
+
+
+/**
+ * 正規化 SITE_URL。
+ *
+ * .env 裡常常只寫網域（wow-stylist.vercel.app），但：
+ *   - LINE 的 uri action 只吃 https://，沒有 scheme 會回 "invalid uri scheme"
+ *   - Flex 的 image url 也一樣，LINE 伺服器要自己去抓圖
+ * 所以一律在這裡補起來，不要散落在各處各補一次。
+ */
+export function siteUrl(): string | null {
+  const raw = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!raw) return null;
+  if (/^https:\/\//i.test(raw)) return raw;
+  if (/^http:\/\//i.test(raw)) return raw.replace(/^http:/i, "https:");
+  return `https://${raw}`;
+}

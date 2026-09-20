@@ -12,6 +12,9 @@
 // 按讚走 postback，webhook 收到後呼叫 likeProduct()（見 src/lib/likes.ts）。
 
 import type { RecommendedOutfit, RecommendedItem } from "@/lib/chat";
+import { siteUrl } from "@/lib/url";
+
+export { siteUrl };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FlexNode = Record<string, any>;
@@ -21,15 +24,6 @@ export type FlexMessage = {
   altText: string;
   contents: FlexNode;
 };
-
-/** LINE 只吃公開 HTTPS 網址；.env 的 SITE_URL 可能沒帶 scheme。 */
-export function siteUrl(): string | null {
-  const raw = (process.env.SITE_URL ?? "").trim().replace(/\/+$/, "");
-  if (!raw) return null;
-  if (/^https:\/\//i.test(raw)) return raw;
-  if (/^http:\/\//i.test(raw)) return raw.replace(/^http:/i, "https:");
-  return `https://${raw}`;
-}
 
 function productImageUrl(productId: number): string | null {
   const base = siteUrl();
