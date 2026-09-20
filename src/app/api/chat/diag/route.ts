@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateChatReply, writeOutfitAdvice, inspectClassifierPrompt } from "@/lib/chat";
+import { generateChatReply, writeOutfitAdvice, inspectClassifierPrompt, resolveProvider } from "@/lib/chat";
 import { buildOutfitCarousel, siteUrl } from "@/lib/flex";
 import { listStyleProfiles } from "@/lib/rank";
 
@@ -58,6 +58,8 @@ export async function GET(req: Request) {
   // 先把環境看一遍 —— 少一把金鑰就會整條掛掉，這裡一眼看得出來
   const env = {
     CHAT_PROVIDER: process.env.CHAT_PROVIDER || "(空，自動偵測)",
+    // 環境變數是什麼、實際用的是什麼，這兩個要分開看
+    resolvedProvider: resolveProvider(),
     CHAT_MODEL: process.env.CHAT_MODEL || "(預設)",
     CHAT_DEBUG: process.env.CHAT_DEBUG || "(未設)",
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? "已設定" : "❌ 沒有",
@@ -160,10 +162,7 @@ export async function GET(req: Request) {
 
     let advice: string | null = null;
     if (withAdvice && reply.advice) {
-      const provider = process.env.CHAT_PROVIDER ||
-        (process.env.ANTHROPIC_API_KEY ? "anthropic" :
-         process.env.OPENAI_API_KEY    ? "openai"    : "rules");
-      advice = await writeOutfitAdvice(reply.advice, provider);
+      advice = await writeOutfitAdvice(reply.advice);
       mark("穿搭建議", advice ? `${advice.length} 字` : "沒產出");
     }
 

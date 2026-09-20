@@ -337,10 +337,8 @@ export async function POST(req: Request) {
         // 偏好更新交給背景（LLM call 較慢）
         const capturedUid = userId;
         after(async () => {
-          const p = process.env.CHAT_PROVIDER ||
-            (process.env.ANTHROPIC_API_KEY ? "anthropic" :
-             process.env.OPENAI_API_KEY    ? "openai"    : "rules");
-          await updateUserPreferenceFile(capturedUid, p);
+          // provider 交給 chat.ts 的 resolveProvider() 決定，這裡不要自己算
+          await updateUserPreferenceFile(capturedUid);
           await pushMessage(capturedUid, "偏好已更新 💾");
         });
       }
@@ -406,10 +404,7 @@ export async function POST(req: Request) {
 
           // 卡片跟建議放在同一次 reply 裡（最多 5 則），不用多花一次 push
           if (reply.advice) {
-            const provider = process.env.CHAT_PROVIDER ||
-              (process.env.ANTHROPIC_API_KEY ? "anthropic" :
-               process.env.OPENAI_API_KEY    ? "openai"    : "rules");
-            const advice = await writeOutfitAdvice(reply.advice, provider);
+            const advice = await writeOutfitAdvice(reply.advice);
             console.log(`[webhook] 穿搭建議 (${ms()}) ${advice ? "完成" : "沒產出"}`);
             if (advice) {
               messages.push({

@@ -420,8 +420,14 @@ async function callOpenAI(
  * "openrouter" 是舊值 —— Nemotron 那條路已經整個移除了。舊的部署環境變數
  * 可能還留著，直接當成未知 provider 會靜默降級到 rules（看起來像 LLM 壞了），
  * 所以這裡認得它、印一行警告、然後走 Claude。
+ *
+ * ⚠️ 任何要決定 provider 的地方都必須呼叫這支，不要自己寫
+ * `process.env.CHAT_PROVIDER || (...)`。之前 webhook 就是自己算了一份，
+ * 把 "openrouter" 原封不動傳給 writeOutfitAdvice()，結果穿搭建議固定
+ * 死在 UNKNOWN_PROVIDER —— 而主流程因為有走這支所以是好的，
+ * 變成「推薦有、建議沒有」這種很難查的症狀。
  */
-function resolveProvider(): string {
+export function resolveProvider(): string {
   const explicit = (process.env.CHAT_PROVIDER || "").trim().toLowerCase();
 
   if (explicit === "openrouter") {
@@ -1094,10 +1100,10 @@ function buildAdviceMessage(ctx: AdviceContext): string {
  */
 export async function writeOutfitAdvice(
   ctx: AdviceContext,
-  provider: string
+  provider?: string
 ): Promise<string | null> {
   const { content, reason } = await callLLM(
-    provider,
+    provider ?? resolveProvider(),
     ADVICE_SYSTEM_PROMPT,
     buildAdviceMessage(ctx),
     500,
@@ -1363,6 +1369,9 @@ export function getSessionHistory(userId: string): ChatTurn[] | null {
  * @param userId    LINE userId 或 test 用的任意字串
  * @param provider  LLM provider（anthropic / openai / rules）
  */
-export async function updateUserPreferenceFile(userId: string, provider: string): Promise<void> {
-  await doUpdateUserPreference(userId, provider);
+export async function updateUserPreferenceFile(
+  userId: string,
+  provider?: string
+): Promise<void> {
+  await doUpdateUserPreference(userId, provider ?? resolveProvider());
 }
