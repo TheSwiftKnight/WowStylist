@@ -367,6 +367,39 @@ async function callOpenAI(
   }
 }
 
+/**
+ * 決定要用哪個 provider。
+ *
+ * CHAT_PROVIDER 沒設就看有哪把金鑰（Claude 優先）。
+ *
+ * "openrouter" 是舊值 —— Nemotron 那條路已經整個移除了。舊的部署環境變數
+ * 可能還留著，直接當成未知 provider 會靜默降級到 rules（看起來像 LLM 壞了），
+ * 所以這裡認得它、印一行警告、然後走 Claude。
+ */
+function resolveProvider(): string {
+  const explicit = (process.env.CHAT_PROVIDER || "").trim().toLowerCase();
+
+  if (explicit === "openrouter") {
+    console.warn(
+      "[chat] CHAT_PROVIDER=openrouter 是舊設定（Nemotron 已移除），自動改用 anthropic。" +
+      "請把環境變數改成 anthropic 或留空。"
+    );
+    return "anthropic";
+  }
+
+  if (explicit) {
+    if (!["anthropic", "openai", "rules"].includes(explicit)) {
+      console.warn(`[chat] 不認得的 CHAT_PROVIDER=${explicit}，改用自動偵測`);
+    } else {
+      return explicit;
+    }
+  }
+
+  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  if (process.env.OPENAI_API_KEY) return "openai";
+  return "rules";
+}
+
 // 統一入口
 async function callLLM(
   provider: string,
@@ -913,10 +946,7 @@ export async function generateChatReply(
   const debugLines: string[] = [];
   const D = (line: string) => { if (debug) debugLines.push(line); };
 
-  const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
-  const provider = explicit ||
-    (process.env.ANTHROPIC_API_KEY ? "anthropic" :
-     process.env.OPENAI_API_KEY    ? "openai"    : "rules");
+  const provider = resolveProvider();
   const model = process.env.CHAT_MODEL ||
     (provider === "anthropic" ? DEFAULT_CLAUDE_MODEL :
      provider === "openai"    ? "gpt-4o-mini" : "-");
