@@ -6,7 +6,7 @@ import { countUntagged } from "@/lib/styleTagger";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "style 風向標 — WowStylist" };
+export const metadata = { title: "style 風向標 — wOow" };
 
 export default async function CompassPage() {
   const [{ tags, isMock }, untagged] = await Promise.all([

@@ -40,7 +40,7 @@ export default async function WallPage() {
 
       <div className="wall__inner">
         <header className="masthead">
-          <p className="masthead__kicker">Wow Stylist</p>
+          <p className="masthead__kicker"><span className="brand">wOow</span></p>
           <h1 className="masthead__title">
             My<em> Inspiration</em>
           </h1>

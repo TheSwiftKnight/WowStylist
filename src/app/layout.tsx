@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "WowStylist — 靈感板",
+  title: "wOow — 靈感板",
   description: "收藏夾、style 風向標、年度總結，釘在同一面牆上。",
 };
 

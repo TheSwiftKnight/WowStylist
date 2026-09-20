@@ -4,7 +4,7 @@ import { getWrapStats } from "@/lib/yearly";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "年度總結 — WowStylist" };
+export const metadata = { title: "年度總結 — wOow" };
 
 export default async function YearlyPage() {
   const stats = await getWrapStats();

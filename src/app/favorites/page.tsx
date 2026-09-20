@@ -8,7 +8,7 @@ import { listRecentJobs } from "@/lib/jobs";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "收藏夾 — WowStylist" };
+export const metadata = { title: "收藏夾 — wOow" };
 
 export default async function FavoritesPage() {
   const [{ garments, isMock }, jobs] = await Promise.all([

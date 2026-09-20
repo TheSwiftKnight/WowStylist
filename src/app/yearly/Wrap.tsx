@@ -65,7 +65,7 @@ function buildSlides(stats: WrapStats): Slide[] {
       fastener: "pin",
       body: (
         <>
-          <p className="wrap__kicker">Wowstylist Almanac</p>
+          <p className="wrap__kicker"><span className="brand">wOow</span> Almanac</p>
           <h1 className="wrap__year">{year}</h1>
           <p className="wrap__display">
             年度<em>總結</em>

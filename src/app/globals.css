@@ -1,5 +1,5 @@
 /* ==========================================================================
-   WowStylist — Inspiration board
+   wOow — Inspiration board
    視覺語彙：釘在牆上的拼貼板。泛黃紙、壓花標本、打字機標籤、黃銅圖釘。
    ========================================================================== */
 
@@ -352,6 +352,11 @@ button {
 .masthead {
   text-align: center;
   margin-bottom: clamp(24px, 4.5vh, 52px);
+}
+
+/* 品牌名 wOow 的大小寫是識別的一部分，不跟著標籤一起轉大寫 */
+.brand {
+  text-transform: none;
 }
 
 .masthead__kicker {
