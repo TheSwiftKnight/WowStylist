@@ -29,6 +29,17 @@ function baseUrl(): string {
 }
 
 /**
+ * 送件的逾時。
+ *
+ * 本機 uvicorn 是毫秒回應，但免費方案的 host（Render 之類）閒置 15 分鐘
+ * 會把容器收掉，下一個請求要等它冷啟動 —— 大約一分鐘。
+ * 預設給 60 秒並且會重試一次，不然冷啟動當下丟進來的連結一定失敗。
+ *
+ * 根治方法是讓它不要睡（見 pipeline/README.md 的「別讓它睡著」）。
+ */
+const TIMEOUT_MS = Number(process.env.PIPELINE_TIMEOUT_MS ?? 60_000);
+
+/**
  * 把一條 IG 連結送進 pipeline。
  *
  * 丟出去就回來，不等 pipeline 跑完 —— LINE webhook 只有幾秒可以用。
@@ -49,26 +60,42 @@ export async function requestIngest(
     headers["x-pipeline-token"] = process.env.PIPELINE_TOKEN;
   }
 
+  const body = JSON.stringify({
+    url,
+    source_text: extra?.sourceText ?? null,
+    sender_id: extra?.senderId ?? null,
+    sender_name: extra?.senderName ?? null,
+  });
+
+  async function send(timeoutMs: number): Promise<Response> {
+    return fetch(`${baseUrl()}/ingest`, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  }
+
   let res: Response;
 
   try {
-    res = await fetch(`${baseUrl()}/ingest`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        url,
-        source_text: extra?.sourceText ?? null,
-        sender_id: extra?.senderId ?? null,
-        sender_name: extra?.senderName ?? null,
-      }),
-      // 只是建 job，應該很快就回
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch (err) {
-    throw new PipelineError(
-      `連不上分析服務（${baseUrl()}）。它有跑起來嗎？ ${String(err)}`,
-      503
+    res = await send(TIMEOUT_MS);
+  } catch (firstError) {
+    // 冷啟動的話第一發常常就是被自己的 timeout 砍掉的，
+    // 但這時容器其實已經在起了，再試一次通常就通。
+    console.warn(
+      `[pipeline] 第一次送件失敗（${String(firstError)}），重試一次…`
     );
+
+    try {
+      res = await send(TIMEOUT_MS);
+    } catch (err) {
+      throw new PipelineError(
+        `連不上分析服務（${baseUrl()}）。它有跑起來嗎？` +
+          `免費方案的話可能正在冷啟動。 ${String(err)}`,
+        503
+      );
+    }
   }
 
   if (!res.ok) {
@@ -97,8 +124,24 @@ export async function requestIngest(
 /** 服務健康檢查（設定頁 / 除錯用）。 */
 export async function pipelineHealth(): Promise<unknown> {
   const res = await fetch(`${baseUrl()}/health`, {
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
     cache: "no-store",
   });
   return res.json();
+}
+
+/**
+ * 叫醒服務，不等它回答。
+ *
+ * 睡著的容器收到任何請求就會開始起來。webhook 在確定有 IG 連結、
+ * 還在跟 LINE 要使用者名稱的時候先打這一下，等真的要送件時
+ * 往往已經起來了。
+ */
+export function warmUp(): void {
+  fetch(`${baseUrl()}/health`, {
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+    cache: "no-store",
+  }).catch(() => {
+    // 叫不醒就算了，requestIngest 那邊還會重試
+  });
 }

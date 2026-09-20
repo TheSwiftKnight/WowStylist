@@ -587,3 +587,53 @@ def get_job(job_id: int) -> dict | None:
 
     finally:
         conn.close()
+
+
+def fail_stale_jobs(older_than_minutes: int = 30) -> int:
+    """
+    把卡住的 job 標成 failed。
+
+    服務重開（Railway 重新部署、容器被回收、本機 Ctrl-C）時，
+    正在跑的 BackgroundTask 會直接消失，job 就永遠停在 running。
+    前端的進度條會一直轉，看起來像當掉。
+
+    所以每次服務啟動就把「還在 queued/running 但已經超過這個時間」
+    的 job 收掉，並在 error 欄位說明原因。
+
+    Returns
+    -------
+    int : 被收掉的筆數
+    """
+
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cursor:
+
+            cursor.execute(
+                f"""
+                UPDATE {JOB_TABLE}
+                   SET status = 'failed',
+                       error  = COALESCE(error, '')
+                                || '分析服務在處理途中重啟了，這筆沒跑完。'
+                 WHERE status IN ('queued', 'running')
+                   AND updated_at < now()
+                       - (%s * interval '1 minute')
+                RETURNING id;
+                """,
+                (older_than_minutes,),
+            )
+
+            stale = cursor.fetchall()
+
+        conn.commit()
+
+        return len(stale)
+
+    except Exception as error:
+        conn.rollback()
+        print(f"[DB Writer] 清理卡住的 job 失敗：{error}")
+        return 0
+
+    finally:
+        conn.close()

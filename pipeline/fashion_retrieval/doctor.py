@@ -69,6 +69,31 @@ def check_env_vars() -> bool:
     table = os.getenv("FASHION_TABLE", "fashion_items")
     line(OK, f"{'FASHION_TABLE':20} {table}")
 
+    # 商品是另一台 RDS，沒設的話就是沿用 IG 那條
+    if os.getenv("PRODUCTS_DB_HOST"):
+        line(OK, f"{'PRODUCTS_DB_HOST':20} 商品 RDS（獨立一台）")
+        for key in (
+            "PRODUCTS_DB_NAME",
+            "PRODUCTS_DB_USER",
+            "PRODUCTS_DB_PASSWORD",
+        ):
+            if os.getenv(key):
+                line(OK, f"{key:20} 商品 RDS")
+            else:
+                line(BAD, f"{key:20} 商品 RDS ← 沒設")
+                all_ok = False
+        line(
+            OK,
+            f"{'PRODUCTS_TABLE':20} "
+            f"{os.getenv('PRODUCTS_TABLE', 'products')}",
+        )
+    else:
+        line(
+            WARN,
+            f"{'PRODUCTS_DB_HOST':20} 沒設 —— 商品會沿用 IG 那條連線。"
+            f"商品在另一台 RDS 的話要補這組。",
+        )
+
     return all_ok
 
 
@@ -290,6 +315,41 @@ def check_database() -> bool:
         except Exception:
             line(BAD, f"{other} ← 沒有這張表")
             all_ok = False
+
+    # ── 商品那台 ──
+    from fashion_retrieval import db_reader
+
+    products_table = db_reader.PRODUCTS_TABLE
+
+    if db_reader.has_separate_products_db():
+        where = f"商品 RDS 的 {products_table}"
+    else:
+        where = f"IG RDS 的 {products_table}（共用連線）"
+
+    try:
+        with db_reader.get_products_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT count(*) FROM {products_table} "
+                    f"WHERE embedding IS NOT NULL"
+                )
+                count = cursor.fetchone()[0]
+
+        if count > 0:
+            line(OK, f"{where}：{count} 筆帶 embedding")
+        else:
+            line(
+                WARN,
+                f"{where}：有表但沒有任何 embedding → 推薦排不出東西",
+            )
+
+    except Exception as error:
+        line(BAD, f"{where} 讀不到：{error}")
+        print(
+            "\n      商品在另一台 RDS 的話，.env 要設 PRODUCTS_DB_HOST / "
+            "_PORT / _NAME / _USER / _PASSWORD。\n"
+        )
+        all_ok = False
 
     if not all_ok:
         print("\n      修法（在專案根目錄）：npm run db:migrate\n")

@@ -1,0 +1,73 @@
+# Render blueprint —— 分析 pipeline（FastAPI）
+#
+# 用法：render.com → New → Blueprint → 選這個 repo，它會讀這個檔。
+# 或者手動 New → Web Service，把下面的設定照填。
+#
+# 環境變數全部 sync:false = Render 不會自己帶值，要你在 Dashboard 填。
+# 金鑰不要寫進這個檔案（它會進版控）。
+
+services:
+  - type: web
+    name: wowstylist-pipeline
+    runtime: docker
+    # repo 根目錄是 Next.js，Python 在 pipeline/ 底下
+    rootDir: pipeline
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # 離 RDS（ap-southeast-2）最近的區域
+    region: singapore
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      # ── 外部服務 ──
+      - key: APIFY_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # 沒填的話 fashion_encoder.py 在 import 時就 raise，服務起不來
+      - key: HF_TOKEN
+        sync: false
+
+      # ── IG RDS ──
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_NAME
+        value: postgres
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_SSLMODE
+        value: require
+      - key: FASHION_TABLE
+        value: fashion_items
+
+      # ── 商品 RDS ──
+      - key: PRODUCTS_DB_HOST
+        sync: false
+      - key: PRODUCTS_DB_PORT
+        value: "5432"
+      - key: PRODUCTS_DB_NAME
+        value: postgres
+      - key: PRODUCTS_DB_USER
+        sync: false
+      - key: PRODUCTS_DB_PASSWORD
+        sync: false
+      - key: PRODUCTS_DB_SSLMODE
+        value: require
+      - key: PRODUCTS_TABLE
+        value: products
+
+      # ── 服務本身 ──
+      # 公開網址，這個一定要設，不然誰都能燒你的 Apify / Claude 額度
+      - key: PIPELINE_TOKEN
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: GARMENT_DEDUP_THRESHOLD
+        value: "0.82"
+      # 服務重啟時，超過幾分鐘還在跑的 job 就當作沒跑完
+      - key: STALE_JOB_MINUTES
+        value: "30"

@@ -22,7 +22,7 @@ IG App ──share link──> LINE chatbot（官方帳號）
           → Fashion Analyzer(Claude Vision) → BGE-M3 Encoder
                           │
                           ▼
-                    Amazon RDS (PostgreSQL)
+                       Amazon RDS (PostgreSQL)
                    ├── fashion_items  一件衣服 = 一列（含 embedding）
                    ├── ingest_jobs    分析進度
                    └── style_tags     風向標標籤
@@ -97,7 +97,11 @@ npm run dev                 # http://localhost:3000
 
 沒設定 LINE 之前也能玩：打開 `/favorites`，用最上面的輸入框貼任何 IG 連結。
 
-LINE bot 完整設定步驟 → 見 **SETUP.md**。
+LINE bot 的設定步驟（Developers Console 的兩把鑰匙、關自動回覆、ngrok、
+填 webhook URL）見 LINE 官方文件；本專案的 webhook 路徑是
+`/api/line/webhook`。
+
+不想一直開著本機 server → **pipeline/README.md** 的「部署」（Render / HF Spaces / Cloud Run）。
 分析那側的細節（檔案分工、直接用 CLI 測、成本）→ 見 **pipeline/README.md**。
 
 ## 專案結構
@@ -151,6 +155,18 @@ Claude Vision + 每件衣服各一次 BGE-M3）。而：
 幾天後會過期，而且 serverless 沒有可以寫的磁碟。所以 pipeline 下載完就直接
 寫進 RDS，前端走 `/api/garments/:id/image` 出圖（列表查詢一律不撈這個欄位，
 不然一頁就是好幾 MB）。
+
+## 兩台資料庫
+
+| | 連線設定 | 放什麼 | 誰在用 |
+|---|---|---|---|
+| **IG RDS** | `DB_*` | `fashion_items`（IG 單品）、`ingest_jobs`、`style_tags` | pipeline 寫；網站的收藏夾、風向標、**使用者偏好**讀 |
+| **商品 RDS** | `PRODUCTS_DB_*` | `products`（電商商品 + 向量） | 只有推薦排序讀，而且只讀不寫 |
+
+兩台的向量都是 `BAAI/bge-m3` 編的、都已經 L2 normalize，所以在同一個語意空間 ——
+推薦就是拿「你收藏的 IG 單品」去跟「商品」算 cosine。
+
+`PRODUCTS_DB_HOST` 留空的話商品會沿用 IG 那條連線（兩批資料放同一台時才這樣設）。
 
 ## 資料表長什麼樣
 

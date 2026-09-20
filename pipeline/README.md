@@ -108,6 +108,127 @@ RDS endpoint 從外面解出這種 IP，代表這台的 **Publicly accessible �
 
 解出來是公開 IP 但還是 timeout → 那就是 security group 沒開你的 IP，走第 1 點的後半段。
 
+## 部署（不想一直開著本機 server）
+
+`Dockerfile` 在這個資料夾，`render.yaml`（專案根目錄）和 `railway.json` 也都寫好了。
+**Render 是目前的首選** —— 不用綁信用卡、吃 Dockerfile、每月 750 小時。
+Railway 現在只給 $1/月的額度，試用期過了就停。
+
+### Render
+
+1. [render.com](https://render.com) 用 GitHub 登入 → **New → Blueprint**
+   → 選 `WowStylist` → 它會讀根目錄的 `render.yaml`。
+   （手動建也行：**New → Web Service**，Runtime 選 **Docker**，
+   **Root Directory** 填 `pipeline` ← 這步最關鍵，不填的話 Render
+   會以為整個 repo 是 Next.js。）
+2. 它會要你填 `sync: false` 的那些環境變數（見下一節）。
+3. Deploy。第一次 build 要五到十分鐘（要裝 opencv 跟 ffmpeg）。
+4. 拿到 `https://wowstylist-pipeline.onrender.com`。
+
+`PORT` 是 Render 給的，Dockerfile 已經吃了，不用自己設。
+
+### 要填的環境變數
+
+值照你本機 `.env`：
+
+```
+APIFY_TOKEN            ANTHROPIC_API_KEY       HF_TOKEN
+DB_HOST                DB_USER                 DB_PASSWORD
+PRODUCTS_DB_HOST       PRODUCTS_DB_USER        PRODUCTS_DB_PASSWORD
+PIPELINE_TOKEN         ALLOWED_ORIGINS
+```
+
+其他（`DB_PORT` / `DB_NAME` / `FASHION_TABLE` / `PRODUCTS_TABLE` …）
+`render.yaml` 已經給了預設值。
+
+兩件事：
+
+- **`PIPELINE_TOKEN` 這次一定要設。** 本機留空沒差，但這個網址是公開的，
+  不設等於誰都能叫你的 Apify 和 Claude 額度。`openssl rand -hex 24` 產一串，
+  Next.js 那邊（Vercel + 本機 `.env`）填一樣的。
+- `ALLOWED_ORIGINS` 填 `https://wow-stylist.vercel.app`（多個就逗號分隔）。
+
+### RDS 要讓它連得進來
+
+Render 的免費方案沒有固定 IP，所以**兩台** RDS 的 security group 都要開：
+
+> EC2 → Security Groups → 該 RDS 的 SG → Inbound rules → Add rule
+> → PostgreSQL / 5432 / `0.0.0.0/0`
+
+密碼務必夠強 —— 這等於把資料庫開到公網。demo 完記得換掉。
+
+### 別讓它睡著 ← 這段很重要
+
+Render 免費方案**閒置 15 分鐘就把容器收掉**，下一個請求要等它冷啟動，
+大約一分鐘。對這個專案的影響是：睡著之後第一次丟連結進 LINE，送件會卡住。
+
+程式這邊已經擋了一層（`src/lib/pipeline.ts`）：逾時放寬到 60 秒、失敗自動
+重試一次，webhook 一確認有 IG 連結就先打 `/health` 把它叫醒，趁我們還在跟
+LINE 要使用者名稱的時候讓它開始起來。但一分鐘的冷啟動還是會讓使用者等。
+
+根治方法是讓它不要睡 —— 拿一個免費的 uptime 監控每 10 分鐘打一次
+`https://你的服務.onrender.com/health`：
+
+- [cron-job.org](https://cron-job.org)（免費、不用信用卡）
+- [UptimeRobot](https://uptimerobot.com)（免費方案 5 分鐘間隔）
+
+一個月 744 小時，750 小時的額度剛好夠一個服務全天候開著 ——
+但也就只夠一個，別再拿同一個帳號開第二個免費服務。
+
+Demo 前 10 分鐘先打一次 `/health` 確認它是醒的。
+
+### 接上 Next.js
+
+Vercel → Project → Settings → Environment Variables：
+
+```
+PIPELINE_API_URL = https://wowstylist-pipeline.onrender.com
+PIPELINE_TOKEN   = （跟 Render 上同一串）
+```
+
+改完要 **Redeploy** 才生效。本機 `.env` 想打 Render 的話改同樣兩個。
+
+### 驗
+
+```bash
+curl https://wowstylist-pipeline.onrender.com/health
+```
+
+`ok: true`、`database.missing_columns` 是空的、`can_upsert` 是 true 就對了。
+然後開 `https://wow-stylist.vercel.app/api/health`，`checks.pipeline.ok` 要是 true。
+再從 LINE 丟一則貼文，`npm run db:show` 看 job 有沒有跑起來。
+
+### 會踩到的地方
+
+| 症狀 | 原因 |
+|---|---|
+| build 失敗，log 裡在跑 `npm install` | Root Directory 沒填 `pipeline` |
+| deploy 成功但 healthcheck 一直失敗 | 多半是 `HF_TOKEN` 沒設 —— `fashion_encoder.py` 在 import 時就 raise，uvicorn 起不來。看 Logs 的第一段 |
+| `/health` 回 `database.ok: false` | RDS security group 沒開 `0.0.0.0/0`（兩台都要） |
+| `/ingest` 回 401 | `PIPELINE_TOKEN` 兩邊不一樣 |
+| 第一次丟連結很久沒反應，之後就正常 | 冷啟動。設個 uptime 監控讓它不要睡 |
+| job 永遠停在 running | 重新部署時把正在跑的 task 砍掉了。服務啟動會自動把超過 30 分鐘的收成 failed（`STALE_JOB_MINUTES` 可調） |
+
+### 其他選項
+
+| 平台 | 要信用卡 | 冷啟動 | 備註 |
+|---|---|---|---|
+| **Render** free | 否 | 閒置 15 分鐘後約 1 分鐘 | 750 小時/月，首選 |
+| **Hugging Face Spaces**（Docker SDK） | 否 | 閒置很久才睡 | 2 vCPU / 16GB，要把 Dockerfile 的 port 改成 7860（`app_port`），repo 另外推到 HF；你們本來就有 HF 帳號 |
+| **Google Cloud Run** | 要（免費額度用不完） | 幾秒到十幾秒 | 縮到零、按用量計費，最省；設定步驟比較多 |
+| **Fly.io** | 要 | 可設定縮到零 | 免費方案對新帳號已經取消 |
+| **Railway** | 否 | 不睡 | 只剩 $1/月額度，試用過期就停 |
+
+### 費用與限制
+
+- Reel 一則會跑十幾次 Claude Vision，單次要一到數分鐘。這種偶發工作量
+  對 Render 的免費方案沒問題，但容器一直開著會吃滿 750 小時，就是剛好而已。
+- 容器的檔案系統是暫時的。下載的圖片和影格寫在 `/tmp`，重開就沒了 ——
+  無所謂，成品（含圖片 bytea）都進 RDS 了。
+- 目前是單一 instance、用 FastAPI 的 BackgroundTasks。同時丟很多連結會塞在
+  同一個行程裡排隊。要更穩就得把 job queue 拉出來（Redis + worker），
+  demo 用不到。
+
 ## 不開服務也能直接測
 
 在專案根目錄：
@@ -188,3 +309,8 @@ FASHION_TABLE, PIPELINE_TOKEN, ALLOWED_ORIGINS, GARMENT_DEDUP_THRESHOLD
 ```
 
 `PIPELINE_OUTPUT_DIR` 可以改暫存圖片 / 影片的位置，預設 `pipeline/outputs/`。
+
+商品在另一台 RDS 的話還要 `PRODUCTS_DB_HOST` / `_PORT` / `_NAME` / `_USER` /
+`_PASSWORD` / `_SSLMODE` 跟 `PRODUCTS_TABLE`。`db_reader.get_connection()` 是
+IG 那台，`get_products_connection()` 是商品那台；沒設 `PRODUCTS_DB_HOST` 時
+後者會退回前者。
