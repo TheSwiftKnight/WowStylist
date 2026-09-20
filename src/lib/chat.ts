@@ -170,6 +170,25 @@ function buildStyleDatabaseSection(): string {
 
 let classifierPromptCache: string | null = null;
 
+/**
+ * 給 /api/chat/diag 檢查用：確認線上跑的分類器到底看得到幾個風格。
+ * 「怎麼還是只認得那 6 個」這種問題，用猜的很花時間，直接把實際的 prompt 吐出來最快。
+ */
+export function inspectClassifierPrompt(): {
+  styleCount: number;
+  styleNames: string[];
+  promptChars: number;
+  prompt: string;
+} {
+  const profiles = listStyleProfiles();
+  return {
+    styleCount: profiles.length,
+    styleNames: profiles.map((p) => p.styleZh ?? p.style),
+    promptChars: classifierSystemPrompt().length,
+    prompt: classifierSystemPrompt(),
+  };
+}
+
 function classifierSystemPrompt(): string {
   if (classifierPromptCache) return classifierPromptCache;
 

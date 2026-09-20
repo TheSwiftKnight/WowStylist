@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateChatReply, writeOutfitAdvice } from "@/lib/chat";
+import { generateChatReply, writeOutfitAdvice, inspectClassifierPrompt } from "@/lib/chat";
 import { buildOutfitCarousel, siteUrl } from "@/lib/flex";
 import { listStyleProfiles } from "@/lib/rank";
 
@@ -69,6 +69,16 @@ export async function GET(req: Request) {
     LINE_CHANNEL_ACCESS_TOKEN: process.env.LINE_CHANNEL_ACCESS_TOKEN ? "已設定" : "❌ 沒有",
   };
 
+  // Vercel 會自動注入這幾個。「為什麼改了還是舊行為」最常見的原因是
+  // 對著舊的 deployment 按 Redeploy —— 那只會用同一個 commit 重建，
+  // 環境變數更新了但程式碼沒有。把 commit 印出來就不用猜。
+  const deploy = {
+    commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "(本機或非 Vercel)",
+    message: process.env.VERCEL_GIT_COMMIT_MESSAGE ?? null,
+    branch: process.env.VERCEL_GIT_COMMIT_REF ?? null,
+    vercelEnv: process.env.VERCEL_ENV ?? null,
+  };
+
   // 直接把明顯的設定錯誤講出來，不要讓人自己對著 env 猜
   const diagnosis: string[] = [];
   if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
@@ -94,11 +104,42 @@ export async function GET(req: Request) {
   }
 
   let styleCount = 0;
+  let classifier: {
+    styleCount: number;
+    styleNames: string[];
+    promptChars: number;
+    prompt?: string;
+  } | null = null;
+
   try {
     styleCount = listStyleProfiles().length;
     mark("載入 style_kb", `${styleCount} 個風格`);
+
+    // 分類器實際看到的風格清單。跟 styleCount 不一樣的話就是 prompt 沒重新生成
+    const insp = inspectClassifierPrompt();
+    classifier = {
+      styleCount: insp.styleCount,
+      styleNames: insp.styleNames,
+      promptChars: insp.promptChars,
+      // 完整 prompt 很長，要看再加 &prompt=1
+      ...(url.searchParams.get("prompt") === "1" ? { prompt: insp.prompt } : {}),
+    };
+    mark("組分類器 prompt", `${insp.styleCount} 個風格、${insp.promptChars} 字元`);
+
+    if (insp.styleCount !== styleCount) {
+      diagnosis.push(
+        `⚠️ style_kb 有 ${styleCount} 個風格，但分類器 prompt 只看到 ${insp.styleCount} 個`
+      );
+    }
+    if (insp.styleCount <= 6) {
+      diagnosis.push(
+        `⚠️ 分類器只看到 ${insp.styleCount} 個風格 —— 若預期是 48，多半是部署的版本還沒更新，` +
+        `或 data/style-kb/style_kb.jsonl 沒被打包進去`
+      );
+    }
   } catch (e) {
     mark("載入 style_kb 失敗", String(e));
+    diagnosis.push(`❌ 讀 style_kb 失敗：${String(e)}`);
   }
 
   try {
@@ -109,6 +150,13 @@ export async function GET(req: Request) {
 
     const flex = reply.outfits ? buildOutfitCarousel(reply.outfits) : null;
     mark("組 Flex 卡片", flex ? `${flex.contents.contents.length} 張` : "組不出來（沒有可用的套數）");
+
+    if ((reply.outfits?.length ?? 0) > 0 && !reply.advice) {
+      diagnosis.push(
+        "⚠️ 有推薦但沒有 advice context —— 三套都對不回 style_kb 的任何一筆搭配建議，" +
+        "或者部署的版本還沒有穿搭建議這個功能（commit b427b9b 之後才有）"
+      );
+    }
 
     let advice: string | null = null;
     if (withAdvice && reply.advice) {
@@ -123,9 +171,11 @@ export async function GET(req: Request) {
       ok: true,
       query: text,
       totalMs: Date.now() - t0,
-      diagnosis: diagnosis.length ? diagnosis : ["✅ 環境變數看起來都齊了"],
+      deploy,
+      diagnosis: diagnosis.length ? diagnosis : ["✅ 看起來都正常"],
       env,
       styleCount,
+      classifier,
       marks,
       prefScope: reply.prefScope ?? null,
       outfits: reply.outfits ?? [],
@@ -149,6 +199,7 @@ export async function GET(req: Request) {
         ok: false,
         query: text,
         totalMs: Date.now() - t0,
+        deploy,
         diagnosis,
         env,
         styleCount,
