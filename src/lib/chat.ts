@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { join } from "path";
 import { loadUserPrefProfile } from "@/lib/prefs";
 import {
   loadStyleCandidates,
@@ -15,7 +17,7 @@ import {
   type RankedProduct,
 } from "@/lib/rank";
 
-// 打字對話的核心模組。
+// 穿搭對話核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
 //   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY，預設 nvidia/nemotron-3-ultra-550b-a55b:free）
@@ -24,20 +26,26 @@ import {
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
 // 核心流程（LLM 模式）：
-//   Phase 1：LLM 分類意圖（A/B/C）→ 抽取標籤
-//   Phase 2：Session 決策（僅 B/C）→ 開新 session 或繼續現有 session
-//   Phase 3：記錄使用者 turn
-//   Phase 4：runRecommendation → searchCandidates → scoreOutfits → formatRecommendation
-//   Phase 5：記錄 assistant turn，回傳結果
+//   1. 若輸入為問候 / 使用說明 → chatWithRules() 直接回傳
+//   2. 取得或開啟 session
+//      - 新 session：accumulatedRequest 以使用者偏好（RDS / 覆寫檔）初始化
+//      - session 只在使用者傳「結束這次討論」或傳 IG 連結時結束，
+//        在那之前每一輪的輸入都會累積起來一起送進分析
+//   3. accumulatedRequest = accumulatedRequest + "\n\n" + 本次輸入
+//   4. 送 accumulatedRequest 給 LLM 做語意分析（單次 call）→ 得到 [風格:] 等標籤
+//   5. 若 intent = "other" → 回傳「告訴我多一點…」
+//   6. A/B/C 意圖 → 分類結果**不是**最終回覆，而是推薦 pipeline 的輸入：
+//        runRecommendation
+//          → searchCandidates  : [風格:] 查 style_kb → 撈候選商品向量 + 偏好向量
+//          → scoreOutfits      : rank.ts 算 S_final = 0.67×S_user + 0.33×S_query
+//          → formatRecommendation : 排出前幾套，格式化成回覆
+//      （合併 feature/llm-routing 時特別保留這段：分支上原本是直接把
+//        「適合風格」當成回覆輸出，那會跳過整個查表→算分流程。）
 //
 // 意圖類型：
 //   A：找「一件特定單品」，給限制條件，不需要搭配
 //   B：已有「一件指定衣物」，找可以互相搭配的其他衣物
 //   C：針對「場合/情境」，找完整一套穿搭，沒有指定衣物
-//
-// DEBUG 模式（CHAT_DEBUG=true）：
-//   LINE Bot 回傳訊息會包含逐步驟的執行狀態，方便測試整體流程正確性。
-//   格式：[步驟/總步驟] emoji 說明 \n ... \n ──────── \n 實際結果
 
 // ── 型別定義 ──────────────────────────────────────────────────────────────────
 
@@ -54,6 +62,8 @@ interface FashionSession {
   sessionId: string;
   userId: string;
   status: "active" | "ended";
+  /** 累積所有輪次的使用者需求（含初始偏好）；每輪 append 後送給 LLM */
+  accumulatedRequest: string;
   turns: ChatTurn[];
   createdAt: number;
   updatedAt: number;
@@ -72,11 +82,17 @@ function getActiveSession(userId: string): FashionSession | null {
   return session;
 }
 
-function startNewSession(userId: string): FashionSession {
+/**
+ * 開啟新 session。
+ * @param userId         LINE userId 或 test 用字串
+ * @param initialRequest 可選的初始累積需求（通常為使用者偏好檔內容）
+ */
+function startNewSession(userId: string, initialRequest = ""): FashionSession {
   const session: FashionSession = {
     sessionId: `${userId}_${Date.now()}`,
     userId,
     status: "active",
+    accumulatedRequest: initialRequest,
     turns: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -102,7 +118,6 @@ function appendTurn(session: FashionSession, turn: ChatTurn): void {
 
 // ── Intent 解析 ───────────────────────────────────────────────────────────────
 // 規則：有 [item:] → B；有 [keywords:] 但沒有 [item:] → C；否則 → "other"（含 A）
-// A 意圖的輸出不帶任何標籤（直接回傳原始訊息），因此這裡歸入 "other" 一起處理。
 
 function parseIntent(classifierOutput: string): Intent {
   if (/\[item:/i.test(classifierOutput)) return "B";
@@ -110,50 +125,11 @@ function parseIntent(classifierOutput: string): Intent {
   return "other"; // 含 A 意圖（無標籤）與閒聊
 }
 
-// ── Prompt：Session 決策器 ────────────────────────────────────────────────────
-const SESSION_DECISION_PROMPT = `你是 WowStylist 的對話狀態管理器。
-根據現有的穿搭討論歷史，判斷使用者的新訊息是「補充/修改現有需求」還是「全新的穿搭需求」。
-
-## 判斷為「繼續」（continue）的情況
-- 使用者在調整上一輪的穿搭參數（例如：「顏色換深一點」「預算降低」「要寬鬆版型」）
-- 使用者詢問上一輪推薦的某件商品細節
-- 使用者說否定後給出修改方向（例如：「不喜歡，換個風格試試」）
-- 使用者在原有場合上微調（例如：「更正式一點」「簡約風的」）
-
-## 判斷為「重開」（new）的情況
-- 使用者提出與目前討論完全不同的場合或需求（例如：從「辦公室穿搭」→「海邊度假穿搭」）
-- 使用者明確說「重新」「算了換一個」「另外」「我想找別的」
-- 使用者詢問與穿搭無關的問題
-- 使用者說「謝謝」「好了」「結束」等收尾詞
-
-## 輸出格式
-只輸出一個單詞，不要任何說明文字：
-continue
-或
-new`;
-
-// 呼叫 LLM 決定 "continue" 或 "new"；失敗時預設繼續
-async function decideSessionAction(
-  session: FashionSession,
-  newMessage: string,
-  provider: string
-): Promise<"continue" | "new"> {
-  const recentTurns = session.turns.slice(-6);
-  const historyText = recentTurns
-    .map((t) => `${t.role === "user" ? "使用者" : "助手"}：${t.content.slice(0, 120)}`)
-    .join("\n");
-
-  const decisionMessage = `[現有對話歷史]\n${historyText}\n\n[使用者新訊息]\n${newMessage}`;
-  const result = await callLLM(provider, SESSION_DECISION_PROMPT, decisionMessage, 10);
-
-  if (!result.content) {
-    console.warn("[chat] session 決策 LLM 無回應，預設繼續");
-    return "continue";
-  }
-
-  const answer = result.content.trim().toLowerCase();
-  if (answer.startsWith("new")) return "new";
-  return "continue";
+// ── 問候 / 使用說明 偵測 ──────────────────────────────────────────────────────
+// 符合這些 pattern 的訊息直接用 rules 回應，不進 session 流程
+function isGreetingOrHowTo(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return /怎麼用|怎么用|幫助|help|說明|收藏夾|我的收藏|看收藏|你好|嗨|哈囉|hi|hello/.test(t);
 }
 
 // ── Prompt：意圖分類器 ────────────────────────────────────────────────────────
@@ -429,44 +405,89 @@ function chatWithRules(text: string): string {
   if (/穿搭|穿什麼|怎麼穿|搭配/.test(t)) {
     return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
   }
-  return "我是穿搭收藏小幫手！傳 IG 連結可以收藏，或直接告訴我場合和預算，我來幫你搭配 ✨";
+  return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
 }
 
-// ── 訊息組裝 ─────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// 使用者偏好更新
+// 在 session 結束（使用者傳「結束這次討論」）後，用 LLM 萃取本次對話的偏好，
+// 寫入 data/user-prefs/{userId}.md，供下次 session 作為冷啟動上下文。
+// ══════════════════════════════════════════════════════════════════════════════
 
-function buildFirstTurnMessage(
-  text: string,
-  nonIgUrls?: string[],
-  userPrefs?: string | null
-): string {
-  let msg = text;
-  if (nonIgUrls && nonIgUrls.length > 0) {
-    msg += `\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`;
-  }
-  if (userPrefs) {
-    msg += `\n\n[使用者偏好紀錄]\n${userPrefs}`;
-  }
-  return msg;
-}
+const PREFERENCE_UPDATE_PROMPT = `你是 WowStylist 使用者偏好分析師。
+根據以下穿搭討論的對話記錄，提取使用者明確表達的偏好，以 Markdown 格式輸出。
 
-function buildContinuationMessage(
-  session: FashionSession,
-  text: string,
-  nonIgUrls?: string[],
-  userPrefs?: string | null
-): string {
-  const recentTurns = session.turns.slice(-6);
-  const historyText = recentTurns
-    .map((t) => `${t.role === "user" ? "使用者" : "助手"}：${t.content.slice(0, 200)}`)
+規則：
+- 只記錄使用者明確提到的內容，不推測或臆測沒說過的事
+- 若某欄位資料不足，直接省略該欄位
+- 每個欄位 1~3 條，簡潔即可
+- 直接輸出 Markdown 格式，不要任何說明文字或前言
+
+## 輸出格式（照此結構，省略空欄位）
+
+### 偏好風格
+（使用者在對話中提到的穿搭風格）
+
+### 場合
+（使用者討論的穿衣場合）
+
+### 預算
+（若有提到價格或預算範圍）
+
+### 顏色偏好
+（明確提到喜歡或不喜歡的顏色）
+
+### 版型／材質
+（若有特別提到的版型或材質偏好）
+
+### 其他備註
+（其他值得記錄的偏好，例如指定品牌、排斥風格等）`;
+
+/**
+ * 內部：讀取已結束的 session → LLM 萃取偏好 → 寫入 .md 檔。
+ * 在 endSession() 之後呼叫（sessionStore 中資料仍在，status=ended）。
+ */
+async function doUpdateUserPreference(userId: string, provider: string): Promise<void> {
+  const session = sessionStore.get(userId);
+  if (!session || session.turns.length < 2) {
+    console.log(`[pref] 跳過偏好更新（turns=${session?.turns.length ?? 0}，不足 2 輪）`);
+    return;
+  }
+
+  const transcript = session.turns
+    .map((t) => `${t.role === "user" ? "使用者" : "助手"}：${t.content.slice(0, 300)}`)
     .join("\n");
-  let msg = `[對話歷史]\n${historyText}\n\n[使用者新訊息]\n${text}`;
-  if (nonIgUrls && nonIgUrls.length > 0) {
-    msg += `\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`;
+
+  const { content: extracted } = await callLLM(provider, PREFERENCE_UPDATE_PROMPT, transcript, 400);
+  if (!extracted) {
+    console.warn(`[pref] 偏好萃取 LLM 無回應，跳過`);
+    return;
   }
-  if (userPrefs) {
-    msg += `\n\n[使用者偏好紀錄]\n${userPrefs}`;
+
+  const dir  = join(process.cwd(), "data", "user-prefs");
+  const file = join(dir, `${userId}.md`);
+
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+    const date      = new Date().toISOString().slice(0, 10);
+    const newBlock  = `\n\n---\n## Session ${date}\n\n${extracted.trim()}`;
+
+    if (existsSync(file)) {
+      const old = readFileSync(file, "utf-8");
+      // 把新的 session 插在第一行（標題）之後
+      const firstNewline = old.indexOf("\n");
+      const head = firstNewline >= 0 ? old.slice(0, firstNewline + 1) : old + "\n";
+      const tail = firstNewline >= 0 ? old.slice(firstNewline + 1) : "";
+      writeFileSync(file, head + newBlock + tail, "utf-8");
+    } else {
+      writeFileSync(file, `# 使用者偏好紀錄\n\n> userId: ${userId}${newBlock}`, "utf-8");
+    }
+
+    console.log(`[pref] 偏好檔更新完成 → ${file}`);
+  } catch (e) {
+    console.error(`[pref] 寫入偏好檔失敗:`, e);
   }
-  return msg;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -810,8 +831,22 @@ async function runRecommendation(
 export async function generateChatReply(
   userId: string | null,
   text: string,
-  nonIgUrls?: string[]
+  options?: {
+    // 非 IG 的 URL（webhook 偵測到後附上，讓 LLM 知道上下文）
+    nonIgUrls?: string[];
+    // 每個 phase 完成後呼叫，即時推送進度給 LINE 使用者
+    // 由 webhook 傳入 pushMessage(userId, msg)；不傳時靜默略過
+    onProgress?: (msg: string) => Promise<void>;
+  }
 ): Promise<string> {
+  const nonIgUrls = options?.nonIgUrls;
+  const onProgress = options?.onProgress;
+  const debug = process.env.CHAT_DEBUG === "true";
+
+  // debug 模式：累積逐步說明，最後拼在回傳訊息最前面
+  const debugLines: string[] = [];
+  const D = (line: string) => { if (debug) debugLines.push(line); };
+
   const explicit = (process.env.CHAT_PROVIDER || "").toLowerCase();
   const provider = explicit ||
     (process.env.OPENROUTER_API_KEY ? "openrouter" :
@@ -821,25 +856,25 @@ export async function generateChatReply(
     (provider === "openrouter" ? "nvidia/nemotron-3-ultra-550b-a55b:free" :
      provider === "anthropic"  ? "claude-haiku-4-5" :
      provider === "openai"     ? "gpt-4o-mini" : "-");
-  const debug = process.env.CHAT_DEBUG === "true";
 
-  // debug 模式：累積逐步說明，最後拼在回傳訊息最前面
-  const debugLines: string[] = [];
-  const D = (line: string) => { if (debug) debugLines.push(line); };
-
-  // ── rules 模式 ──────────────────────────────────────────────────────────────
-  if (provider === "rules") {
-    const reply = chatWithRules(text);
-    if (debug) {
-      return `[DEBUG] provider=rules\n────────────\n${reply}`;
-    }
-    return reply;
+  if (debug) {
+    await onProgress?.(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
   }
-
-  // ── LLM 模式 ────────────────────────────────────────────────────────────────
   D(`[DEBUG] provider=${provider} | model=${model} | userId=${userId ?? "null"}`);
   D("");
 
+  // ── rules 模式 ──────────────────────────────────────────────────────────────
+  if (provider === "rules") {
+    return chatWithRules(text);
+  }
+
+  // ── 問候 / 使用說明：不進 session，直接 rules 回應 ─────────────────────────
+  if (isGreetingOrHowTo(text)) {
+    console.log(`[chat] 問候/使用說明，直接 rules 回應`);
+    return chatWithRules(text);
+  }
+
+  // ── 使用者偏好 ──────────────────────────────────────────────────────────────
   // 偏好來自 IG RDS（使用者分享進來、pipeline 拆出來的單品），
   // 不是本機檔案。詳見 src/lib/prefs.ts。
   const prefProfile = await loadUserPrefProfile(userId);
@@ -863,116 +898,74 @@ export async function generateChatReply(
     D(`ℹ️  無使用者偏好（資料庫裡還沒有任何 IG 單品，或連不上）`);
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Phase 1：意圖分類
-  // ──────────────────────────────────────────────────────────────────────────
-  D("[1/6] 🧠 意圖分類中（CLASSIFIER_SYSTEM_PROMPT）...");
-  const firstTurnMessage = buildFirstTurnMessage(text, nonIgUrls, userPrefs);
-  console.log(`[chat] Phase 1 分類，provider=${provider} model=${model}`);
+  // ── Session：取得現有的，沒有就開新的 ───────────────────────────────────────
+  // 注意：session 不會被 LLM 自動切換。只有使用者傳「結束這次討論」（webhook
+  // 呼叫 endFashionSession）或傳 IG 連結時才結束，在那之前一律視為同一次對話。
+  let session: FashionSession;
+  const existingSession = userId ? getActiveSession(userId) : null;
 
+  if (!existingSession) {
+    const initialRequest = userPrefs ? `[使用者偏好紀錄]\n${userPrefs}` : "";
+    session = startNewSession(userId ?? `anon_${Date.now()}`, initialRequest);
+    console.log(`[chat] 開啟新 session，初始偏好 ${initialRequest.length} 字元`);
+    D(`[1/6] 🗂️  開啟新 session（${session.sessionId}），初始偏好 ${initialRequest.length} 字元`);
+  } else {
+    session = existingSession;
+    console.log(`[chat] 繼續現有 session ${session.sessionId}，已有 ${session.turns.length} 輪`);
+    D(`[1/6] 🗂️  沿用 session ${session.sessionId}（已 ${session.turns.length} 輪）`);
+  }
+
+  // ── 累積需求：舊內容 + 本次輸入 ─────────────────────────────────────────────
+  // 同一個 session 裡的每一句都會被帶進來一起分析，所以使用者可以分多次
+  // 慢慢補條件（「要去婚禮」→「預算三千」→「想低調一點」）。
+  let inputText = text;
+  if (nonIgUrls && nonIgUrls.length > 0) {
+    inputText += `\n[使用者附上非 IG 連結：${nonIgUrls.join(", ")}]`;
+  }
+
+  const accumulated = session.accumulatedRequest
+    ? `${session.accumulatedRequest}\n\n${inputText}`
+    : inputText;
+
+  console.log(`[chat] 累積需求長度 ${accumulated.length} 字元，送 LLM 分析`);
+  D(`[2/6] 📚 累積需求 ${accumulated.length} 字元（本輪 ${inputText.length} 字元）`);
+
+  // ── 單次 LLM 分析（送累積需求）→ 解析出 [風格:] [item:] [keywords:] [price:] ─
+  D("[3/6] 🧠 意圖分類 + 風格匹配（CLASSIFIER_SYSTEM_PROMPT）...");
   const { content: classifiedResult, reason: classifyReason } = await callLLM(
     provider,
     CLASSIFIER_SYSTEM_PROMPT,
-    firstTurnMessage,
+    accumulated,
     700
   );
 
   if (!classifiedResult) {
     console.warn(`[chat] 分類器無回應（${classifyReason}），降級到 rules`);
-    D(`      ↳ ❌ LLM 無回應：${classifyReason}`);
-    D("      ↳ 降級到 rules fallback");
-    const fallback = chatWithRules(text);
-    if (debug) {
-      return `${debugLines.join("\n")}\n────────────\n${fallback}`;
-    }
-    return fallback;
+    const errDetail = debug ? `\n原因：${classifyReason}` : "";
+    await onProgress?.(`❌ 分析失敗，降級到關鍵字模式${errDetail}`);
+    return chatWithRules(text);
   }
 
   const intent = parseIntent(classifiedResult);
-  D(`      ↳ ✅ intent=${intent}`);
-  D(`      ↳ 分類輸出（前 120 字）：${classifiedResult.slice(0, 120).replace(/\n/g, " ")}`);
   console.log(`[chat] 分類結果 intent=${intent}: ${classifiedResult.slice(0, 200)}`);
+  D(`      ↳ intent=${intent}｜${classifiedResult.slice(0, 120).replace(/\n/g, " ")}`);
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Phase 2：Session 決策（僅 B/C；A/other 直接回傳）
-  // ──────────────────────────────────────────────────────────────────────────
-  let session: FashionSession | null = null;
-
-  if (!userId || intent === "other") {
-    D(`[2/6] 🗂️  Session：不適用（intent=${intent}，無需追蹤對話）`);
-    D("[3/6] ⏭️  跳過（非 B/C 意圖）");
-    D("");
-    D("────────────");
-    if (debug) return `${debugLines.join("\n")}\n${classifiedResult}`;
-    return classifiedResult;
+  // ── 意圖不明：問清楚，不污染累積需求 ──────────────────────────────────────
+  if (intent === "other") {
+    // 不更新 accumulatedRequest（本次輸入不納入累積），也不記錄 turn
+    return "告訴我多一點，我幫你搭！🎯\n你要去哪裡？預算大概多少？有偏好的風格嗎（例如簡約、可愛、復古）？";
   }
 
-  // B / C 意圖：進入 session 管理
-  D("[2/6] 🗂️  Session 決策（intent=B/C）...");
-  const existingSession = getActiveSession(userId);
-
-  if (!existingSession) {
-    session = startNewSession(userId);
-    D(`      ↳ 無現有 session → 開啟新 session（${session.sessionId}）`);
-  } else {
-    D(`      ↳ 現有 session=${existingSession.sessionId}（turns=${existingSession.turns.length}）`);
-    D("      ↳ 呼叫 SESSION_DECISION_PROMPT 判斷 continue/new...");
-
-    const decision = await decideSessionAction(existingSession, text, provider);
-    D(`      ↳ 決策結果：${decision}`);
-    console.log(`[chat] session 決策：${decision} sessionId=${existingSession.sessionId}`);
-
-    if (decision === "new") {
-      endSession(userId);
-      session = startNewSession(userId);
-      D(`      ↳ 結束舊 session → 開啟新 session（${session.sessionId}）`);
-    } else {
-      session = existingSession;
-      D("      ↳ 繼續現有 session，重新分類（帶對話歷史）...");
-
-      const continuationMessage = buildContinuationMessage(session, text, nonIgUrls, userPrefs);
-      const { content: reClassified } = await callLLM(
-        provider,
-        CLASSIFIER_SYSTEM_PROMPT,
-        continuationMessage,
-        700
-      );
-
-      if (reClassified) {
-        const reIntent = parseIntent(reClassified);
-        D(`      ↳ 重新分類完成 intent=${reIntent}`);
-        console.log(`[chat] 重新分類（帶歷史）: ${reClassified.slice(0, 200)}`);
-
-        // Phase 3（continuation 路徑）
-        D("[3/6] 📝 記錄使用者 turn（continuation）");
-        appendTurn(session, { role: "user", content: text, intent: reIntent, timestamp: Date.now() });
-
-        // Phase 4
-        const finalResult = await runRecommendation(reClassified, session, provider, debug ? debugLines : undefined);
-
-        // Phase 5
-        D("[5/6 已完成] 📝 記錄 assistant turn");
-        appendTurn(session, { role: "assistant", content: finalResult, timestamp: Date.now() });
-        D(`      ↳ sessionId=${session.sessionId} | 總 turns=${session.turns.length}`);
-        D("");
-        D("────────────");
-        if (debug) return `${debugLines.join("\n")}\n${finalResult}`;
-        return finalResult;
-      }
-
-      D("      ↳ 重新分類失敗，使用第一輪結果繼續");
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Phase 3：記錄使用者 turn（新 session 路徑）
-  // ──────────────────────────────────────────────────────────────────────────
-  D("[3/6] 📝 記錄使用者 turn");
+  // ── A / B / C：確認累積需求，記錄 turn ────────────────────────────────────
+  session.accumulatedRequest = accumulated;
+  session.updatedAt = Date.now();
   appendTurn(session, { role: "user", content: text, intent, timestamp: Date.now() });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Phase 4：推薦流程
-  // ──────────────────────────────────────────────────────────────────────────
+  // ── 分類結果是 pipeline 的「輸入」，不是回覆 ───────────────────────────────
+  // classifiedResult 裡的 [風格:] 會被 searchCandidates 拿去查 style_kb.jsonl，
+  // 撈出候選商品後由 rank.ts 算分，最後才格式化成使用者看到的推薦。
+  await onProgress?.("🔍 抓到適合的風格了，正在從商品庫挑搭配...");
+
   const recommendation = await runRecommendation(
     classifiedResult,
     session,
@@ -980,16 +973,12 @@ export async function generateChatReply(
     debug ? debugLines : undefined
   );
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Phase 5：記錄 assistant turn，回傳
-  // ──────────────────────────────────────────────────────────────────────────
-  D("[5/6 已完成] 📝 記錄 assistant turn");
   appendTurn(session, { role: "assistant", content: recommendation, timestamp: Date.now() });
-  D(`      ↳ sessionId=${session.sessionId} | 總 turns=${session.turns.length}`);
-  D("");
-  D("────────────");
+  console.log(`[chat] 完成 sessionId=${session.sessionId} 總 turns=${session.turns.length}`);
 
-  if (debug) return `${debugLines.join("\n")}\n${recommendation}`;
+  if (debug) {
+    return `${debugLines.join("\n")}\n────────────\n${recommendation}`;
+  }
   return recommendation;
 }
 
@@ -997,7 +986,7 @@ export async function generateChatReply(
 
 /**
  * 結束使用者的穿搭 session。
- * 由 webhook 在使用者點擊「選擇這套」「收藏」等按鈕時呼叫。
+ * 由 webhook 在使用者傳「結束這次討論」時呼叫。
  * 結束後下一則訊息將自動開啟新 session。
  */
 export function endFashionSession(userId: string): void {
@@ -1006,13 +995,20 @@ export function endFashionSession(userId: string): void {
 
 /**
  * 取得使用者目前 session 的對話歷史。
- * 供偏好更新模組（preference updater）使用：
- *   - 讀取使用者在本次搭配討論中說過的需求
- *   - 結合最終選擇，更新 user_vec
- * 若無 session（或已結束）回傳 null。
+ * 若無 session（含已結束的）回傳 null。
  */
 export function getSessionHistory(userId: string): ChatTurn[] | null {
   const session = sessionStore.get(userId);
   if (!session) return null;
   return session.turns;
+}
+
+/**
+ * 手動觸發偏好檔更新（供 test script、webhook 的「結束這次討論」等外部呼叫）。
+ * 會讀取 sessionStore 中最後一筆該 userId 的 session（active 或 ended 皆可）。
+ * @param userId    LINE userId 或 test 用的任意字串
+ * @param provider  LLM provider（openrouter / anthropic / openai / rules）
+ */
+export async function updateUserPreferenceFile(userId: string, provider: string): Promise<void> {
+  await doUpdateUserPreference(userId, provider);
 }
