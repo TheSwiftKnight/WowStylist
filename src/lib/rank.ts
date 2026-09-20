@@ -115,6 +115,9 @@ export type RankResult = {
 type StyleRecord = {
   style: string;
   style_zh?: string;
+  aliases?: string[];
+  occasion?: string[];
+  season?: string[];
   outfit_text?: string;
   embed_text?: string;
   source_title?: string;
@@ -221,6 +224,7 @@ function loadKb(): Map<string, StyleRecord[]> {
 /** 測試或換檔之後叫一下。 */
 export function resetStyleKbCache(): void {
   kbCache = null;
+  profilesCache = null;
 }
 
 /** 同一個 product_id 出現在多筆記錄時，留分數最高的那個。 */
@@ -267,6 +271,179 @@ export function loadStyleCandidates(
     top,
     bottom,
   };
+}
+
+/**
+ * 一個風格的「可比對欄位」總表 —— 把該風格底下所有記錄的
+ * aliases / occasion / season 聯集起來。
+ *
+ * 用途有兩個：
+ *   1. 產生分類器 prompt 裡的風格資料庫（讓 LLM 能用場合、季節去語意匹配，
+ *      而不是只認得風格名）
+ *   2. 分類器沒給出可用的 [風格:] 時，程式端用這些欄位做關鍵字評分 fallback
+ */
+export type StyleProfile = {
+  style: string;
+  styleZh: string | null;
+  aliases: string[];
+  /** 依出現次數由多到少 */
+  occasions: string[];
+  seasons: string[];
+};
+
+let profilesCache: StyleProfile[] | null = null;
+
+export function listStyleProfiles(): StyleProfile[] {
+  if (profilesCache) return profilesCache;
+
+  const byStyle = new Map<string, {
+    styleZh: string | null;
+    aliases: Set<string>;
+    occasions: Map<string, number>;
+    seasons: Map<string, number>;
+  }>();
+
+  const bump = (m: Map<string, number>, v: unknown) => {
+    const t = String(v ?? "").trim();
+    if (t) m.set(t, (m.get(t) ?? 0) + 1);
+  };
+
+  for (const records of loadKb().values()) {
+    for (const r of records) {
+      let entry = byStyle.get(r.style);
+      if (!entry) {
+        entry = { styleZh: r.style_zh ?? null, aliases: new Set(), occasions: new Map(), seasons: new Map() };
+        byStyle.set(r.style, entry);
+      }
+      if (!entry.styleZh && r.style_zh) entry.styleZh = r.style_zh;
+      for (const a of r.aliases ?? []) {
+        const t = String(a).trim();
+        if (t) entry.aliases.add(t);
+      }
+      for (const o of r.occasion ?? []) bump(entry.occasions, o);
+      for (const s of r.season ?? []) bump(entry.seasons, s);
+    }
+  }
+
+  const byCount = (m: Map<string, number>) =>
+    [...m.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+
+  profilesCache = [...byStyle.entries()].map(([style, v]) => ({
+    style,
+    styleZh: v.styleZh,
+    aliases: [...v.aliases],
+    occasions: byCount(v.occasions),
+    seasons: byCount(v.seasons),
+  }));
+
+  return profilesCache;
+}
+
+// ── 用 query 直接比對風格（分類器沒給出可用風格時的 fallback）──────────────
+//
+// 使用者打進來的不一定是風格名 ——「婚禮」「露營」「夏天」這些是場合和季節。
+// KB 的每筆記錄都有 occasion / season，這裡把它們一起納入評分。
+//
+// 不用 embedding 做這件事的原因：embedQuery 要打 HF Inference API，
+// 而這段是在分類器已經失手之後跑的補救，再多一次網路往返不划算；
+// 而且 KB 的 occasion 本來就是中文短語，字面比對的命中率已經夠用。
+
+const SEASON_ALIASES: Record<string, string[]> = {
+  spring: ["春", "spring"],
+  summer: ["夏", "summer"],
+  fall: ["秋", "fall", "autumn"],
+  autumn: ["秋", "fall", "autumn"],
+  winter: ["冬", "winter"],
+};
+
+/** 太泛用的兩字詞，不能拿來當場合的部分比對，否則「婚禮賓客穿搭」會誤中「新中式穿搭」。 */
+const GENERIC_FRAGMENTS = new Set([
+  "穿搭", "風格", "造型", "服裝", "衣服", "搭配", "時尚", "日常", "場合", "感覺", "一點", "什麼",
+]);
+
+function norm(x: string): string {
+  return x.toLowerCase().replace(/[\s\-_]+/g, "");
+}
+
+/** 名稱／別名：要整個詞出現，不做部分比對。 */
+function containsTerm(queryNorm: string, term: string): boolean {
+  const t = norm(term);
+  return t.length >= 2 && queryNorm.includes(t);
+}
+
+/** 場合：允許兩字的部分比對（KB 寫「日常通勤」，使用者只打「通勤」），但排除泛用詞。 */
+function containsOccasion(queryNorm: string, term: string): boolean {
+  const t = norm(term);
+  if (t.length < 2) return false;
+  if (queryNorm.includes(t)) return true;
+  if (t.length >= 4) {
+    for (let i = 0; i + 2 <= t.length; i++) {
+      const piece = t.slice(i, i + 2);
+      if (/^[\u4e00-\u9fff]{2}$/.test(piece) && !GENERIC_FRAGMENTS.has(piece) && queryNorm.includes(piece)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** 季節：春夏秋冬是單字，不能套兩字門檻。 */
+function containsSeason(queryNorm: string, term: string): boolean {
+  const t = norm(term);
+  return t.length >= 1 && queryNorm.includes(t);
+}
+
+export type StyleQueryMatch = {
+  profile: StyleProfile;
+  score: number;
+  /** 命中了哪些東西，寫進 debug 訊息用 */
+  hits: string[];
+};
+
+/**
+ * 拿 query 去比對所有風格的 名稱／別名／場合／季節。
+ *
+ * 權重：名稱或別名 4、場合每個 1（最多兩個）、季節 1。
+ * 名稱權重刻意高於「場合+季節」的總和，直接講出風格名的人意圖最明確。
+ *
+ * 回傳分數由高到低，呼叫端自己決定門檻。
+ */
+export function matchStylesByQuery(query: string): StyleQueryMatch[] {
+  const q = norm(query);
+  if (!q) return [];
+
+  const out: StyleQueryMatch[] = [];
+
+  for (const profile of listStyleProfiles()) {
+    const hits: string[] = [];
+    let score = 0;
+
+    const names = [profile.styleZh, profile.style.replace(/_/g, " "), ...profile.aliases]
+      .filter((x): x is string => Boolean(x));
+    const nameHit = names.find((n) => containsTerm(q, n));
+    if (nameHit) {
+      score += 4;
+      hits.push(`名稱/別名「${nameHit}」`);
+    }
+
+    const occHits = profile.occasions.filter((o) => containsOccasion(q, o)).slice(0, 2);
+    if (occHits.length) {
+      score += occHits.length;
+      hits.push(`場合「${occHits.join("、")}」`);
+    }
+
+    const seasonHit = profile.seasons.find((s) =>
+      (SEASON_ALIASES[s.toLowerCase()] ?? [s]).some((alias) => containsSeason(q, alias))
+    );
+    if (seasonHit) {
+      score += 1;
+      hits.push(`季節「${seasonHit}」`);
+    }
+
+    if (score > 0) out.push({ profile, score, hits });
+  }
+
+  return out.sort((a, b) => b.score - a.score);
 }
 
 /** 目前 KB 裡有哪些風格（debug / health 用）。 */

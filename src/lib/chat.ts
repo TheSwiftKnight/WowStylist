@@ -15,6 +15,8 @@ import {
   type Product,
   loadStyleSuggestions,
   loadProductDescriptions,
+  listStyleProfiles,
+  matchStylesByQuery,
   type RankedProduct,
   type StyleSuggestion,
 } from "@/lib/rank";
@@ -137,17 +139,45 @@ function isGreetingOrHowTo(text: string): boolean {
 }
 
 // ── Prompt：意圖分類器 ────────────────────────────────────────────────────────
-const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根據使用者輸入，判斷意圖並輸出結構化結果。
+/**
+ * 分類器 prompt 裡的風格資料庫。
+ *
+ * 原本是寫死 6 個風格，但 style_kb.jsonl 裡有 48 個 —— 寫死的那份等於讓
+ * 分類器永遠只認得六分之一的庫存。這裡改成開機時從 KB 生成，
+ * 而且把 aliases / occasions / seasons 都列出來，因為使用者打進來的
+ * 常常不是風格名，而是場合（「婚禮賓客」）或季節（「秋天通勤」）。
+ *
+ * 約 7000 字元／3.5k tokens，Claude 吃得下；模組層算一次就快取住。
+ */
+function buildStyleDatabaseSection(): string {
+  const profiles = listStyleProfiles();
+  if (profiles.length === 0) {
+    return "（style_kb.jsonl 讀不到或是空的，這次沒有可用的風格）";
+  }
+  return profiles
+    .map((p) => {
+      const parts = [
+        p.aliases.length ? `aliases=[${p.aliases.join(", ")}]` : null,
+        // 場合取最常出現的 8 個就好，全列會讓 prompt 膨脹又稀釋重點
+        p.occasions.length ? `occasions=[${p.occasions.slice(0, 8).join(", ")}]` : null,
+        p.seasons.length ? `seasons=[${p.seasons.join(", ")}]` : null,
+      ].filter(Boolean);
+      return `${p.styleZh ?? p.style}: ${parts.join(", ")}`;
+    })
+    .join("\n");
+}
+
+let classifierPromptCache: string | null = null;
+
+function classifierSystemPrompt(): string {
+  if (classifierPromptCache) return classifierPromptCache;
+
+  classifierPromptCache = `你是 WowStylist 穿搭需求分析器。根據使用者輸入，判斷意圖並輸出結構化結果。
 
 ## 風格資料庫（用於語意匹配）
 以下是可用的穿搭風格，每個風格含有別名、場合、季節供語意比對：
 
-老錢風: aliases=[old money aesthetic, old money, 老錢, preppy, classic elegance], occasions=[日常通勤, 休閒聚會, 商務休閒, 度假, 週末出遊], seasons=[spring, fall, autumn, winter, summer]
-靜奢風: aliases=[stealth wealth, quiet luxury, 靜奢, 低調奢華, minimalist luxury], occasions=[日常穿著, 辦公室, 正式場合, 晚間活動, 特殊場合], seasons=[fall, winter, spring, summer]
-芭蕾風: aliases=[ballet core, balletcore, 芭蕾核心, 芭蕾女孩, ballet aesthetic, ballerina], occasions=[日常通勤, 休閒街頭, 舞蹈教室, 健身課程], seasons=[spring, fall, winter, summer]
-蝴蝶結甜美風: aliases=[coquette aesthetic, bow girl, coquette, 甜美, 蝴蝶結, feminine, girly], occasions=[紐約時裝週, 街拍, 春日約會, 通勤, 咖啡廳], seasons=[spring, winter, fall]
-田園風: aliases=[cottage core, cottagecore, 鄉村風, 田園, 自然風, nature, botanical], occasions=[健行, 野餐, 城市漫步, 音樂節], seasons=[spring, summer, fall, winter]
-明亮學院風: aliases=[light academia, light academia aesthetic, 學院風, 書卷氣, intellectual, academic], occasions=[咖啡廳, 校園, 圖書館, 半正式場合], seasons=[spring, fall, winter, summer]
+${buildStyleDatabaseSection()}
 
 ## 意圖類型定義
 - A：找「一件特定單品」——使用者給出條件（顏色、材質、款式等），想找某類型的單品，不涉及搭配
@@ -187,6 +217,9 @@ const CLASSIFIER_SYSTEM_PROMPT = `你是 WowStylist 穿搭需求分析器。根�
 {使用者原始訊息（移除價格相關文字）}
 [keywords: {5~10個英文名詞或形容詞，逗號分隔，涵蓋場合、風格、限制，例如：wedding guest, formal, light-color, elegant, feminine}]
 [price: {若有，英文描述，例如：under NT$3000；否則省略此行}]`;
+
+  return classifierPromptCache;
+}
 
 // LLM 回傳結果，content=null 時 reason 說明失敗原因
 type LLMResult = { content: string; reason: string } | { content: null; reason: string };
@@ -636,10 +669,35 @@ async function searchCandidates(
     if (style) break;
   }
 
+  // 分類器給的風格名對不到 KB（或根本沒給）→ 直接拿 query 去比對
+  // 名稱／別名／場合／季節。使用者常常打的是「婚禮賓客」「秋天通勤」這種
+  // 場合或季節，不是風格名。
+  if (!style) {
+    const plainText = classifiedResult.replace(/\[[^\]]*\]/g, " ");
+    const queryForMatch = [styleNames.join(" "), keywords, item, plainText]
+      .filter(Boolean).join(" ");
+
+    const matches = matchStylesByQuery(queryForMatch);
+    for (const m of matches.slice(0, 3)) {
+      const candidate = loadStyleCandidates(m.profile.style);
+      if (candidate) {
+        style = candidate;
+        debugParts.push(
+          `分類器風格對不到，改用 query 比對命中「${m.profile.styleZh ?? m.profile.style}」` +
+          `（分數 ${m.score}：${m.hits.join("、")}）`
+        );
+        console.log(
+          `[chat] 風格 fallback：${m.profile.style} score=${m.score} hits=${m.hits.join("、")}`
+        );
+        break;
+      }
+    }
+  }
+
   if (!style) {
     const reason = styleNames.length === 0
-      ? "分類器沒有給 [風格:] 標籤"
-      : `style_kb.jsonl 裡找不到：${styleNames.join(" / ")}`;
+      ? "分類器沒有給 [風格:] 標籤，query 也比對不到任何風格的名稱／場合／季節"
+      : `style_kb.jsonl 裡找不到：${styleNames.join(" / ")}，query 也比對不到任何風格的名稱／場合／季節`;
     console.log(`[chat] searchCandidates 跳過排序 — ${reason}`);
     return emptySearchResult(
       [...debugParts, reason].join(" | "),
@@ -1212,7 +1270,7 @@ export async function generateChatReply(
   D("[3/6] 🧠 意圖分類 + 風格匹配（CLASSIFIER_SYSTEM_PROMPT）...");
   const { content: classifiedResult, reason: classifyReason } = await callLLM(
     provider,
-    CLASSIFIER_SYSTEM_PROMPT,
+    classifierSystemPrompt(),
     accumulated,
     700
   );
