@@ -20,16 +20,14 @@ export default async function CompassPage() {
       </div>
 
       <div className="compass">
-        <header className="compass__head">
-          <div>
-            <h1 className="page-title">
-              style <em>風向標</em>
-            </h1>
-            <p className="page-note">
-              這些是目前系統讀到的你。點一下改名字、點兩下換分類、右邊的 × 刪掉。
-            </p>
-          </div>
-          <div className="compass__legend">
+        <header className="page-head page-head--tight">
+          <h1 className="page-title">
+            style <em>風向標</em>
+          </h1>
+          <p className="page-note">
+            這些是目前系統讀到的你。點一下改名字、點兩下換分類、右邊的 × 刪掉。
+          </p>
+          <div className="page-head__meta compass__legend">
             <span>
               <i style={{ background: "#9a9b4f" }} />
               風格
@@ -51,7 +49,7 @@ export default async function CompassPage() {
         </section>
 
         <footer className="compass__foot">
-          <span>字級大小＝這個標籤在你收藏裡的比重</span>
+          <span>依比重排序，越前面代表在你收藏裡出現得越多</span>
           <SyncTagsButton />
           {isMock ? (
             <span className="mock-flag">示範資料 · 資料庫連不上，改不動</span>

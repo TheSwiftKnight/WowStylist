@@ -1,8 +1,9 @@
 import Link from "next/link";
 import AddLinkForm from "../components/AddLinkForm";
 import JobsBanner from "../components/JobsBanner";
-import GarmentCard from "../components/GarmentCard";
+import PostCard from "../components/PostCard";
 import { listGarments } from "@/lib/garments";
+import { groupByPost } from "@/lib/outfits";
 import { listRecentJobs } from "@/lib/jobs";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,10 @@ export default async function FavoritesPage() {
   const tops = garments.filter((g) => g.category === "top").length;
   const pants = garments.filter((g) => g.category === "pants").length;
 
+  // 同一則貼文的單品收成一張卡，卡片裡再依「同一套」分頁
+  const posts = groupByPost(garments);
+  const outfitCount = posts.reduce((n, p) => n + p.outfits.length, 0);
+
   return (
     <main className="board">
       <div className="return-bar">
@@ -28,18 +33,18 @@ export default async function FavoritesPage() {
       </div>
 
       <div className="board__inner">
-        <header className="fav-head">
-          <div>
-            <h1 className="page-title">
-              收藏<em>夾</em>
-            </h1>
-            <p className="page-note">
-              你分享給 LINE 官方帳號的貼文，會被拆成一件一件的單品釘在這面板子上。
-              每件都有一段 AI 寫的描述跟一組語意向量，之後拿來配商品。
-            </p>
-          </div>
-          <div className="fav-head__count">
-            {garments.length} 件 · 上衣 {tops} / 褲子 {pants}
+        <header className="page-head">
+          <h1 className="page-title">
+            收藏<em>夾</em>
+          </h1>
+          <p className="page-note">
+            你分享給 LINE 官方帳號的貼文，會被拆成一件一件的單品釘在這面板子上。
+            每件都有一段 AI 寫的描述跟一組語意向量，之後拿來配商品。
+          </p>
+          <div className="page-head__meta fav-head__count">
+            {posts.length} 則貼文 · {outfitCount} 套 · {garments.length} 件
+            <br />
+            上衣 {tops} / 褲子 {pants}
           </div>
         </header>
 
@@ -63,12 +68,8 @@ export default async function FavoritesPage() {
           </div>
         ) : (
           <div className="pinboard">
-            {garments.map((garment) => (
-              <GarmentCard
-                key={garment.id}
-                garment={garment}
-                isMock={isMock}
-              />
+            {posts.map((post) => (
+              <PostCard key={post.key} group={post} isMock={isMock} />
             ))}
           </div>
         )}
