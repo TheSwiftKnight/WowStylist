@@ -1024,36 +1024,33 @@ function compactAdvicePart(value: string | null | undefined, maxLength: number):
 
 /** OpenRouter 暫時 timeout / rate limit 時的保底，避免推薦卡片後面整段消失。 */
 function fallbackOutfitAdvice(ctx: AdviceContext): string {
-  const need = compactAdvicePart(ctx.userQuery.split("\n")[0], 48);
-  const itemNames = [ctx.pickedTop?.title, ctx.pickedBottom?.title]
-    .map((x) => compactAdvicePart(x, 34))
-    .filter(Boolean);
+  const need = compactAdvicePart(ctx.userQuery.split("\n")[0], 32);
   const tip = compactAdvicePart(
     ctx.dos[0] ?? ctx.embedText ?? ctx.suggestedTop ?? ctx.suggestedBottom,
-    72
+    30
   );
 
   const opening = need
-    ? `這套以${ctx.styleZh}為主軸，呼應你「${need}」的需求。`
+    ? `這套以${ctx.styleZh}回應你「${need}」的需求。`
     : `這套以${ctx.styleZh}為主軸，整體方向會比較一致。`;
-  const pieces = itemNames.length
-    ? `挑選的${itemNames.join("搭配")}可以直接組成完整造型。`
+  const pieces = ctx.pickedTop && ctx.pickedBottom
+    ? "卡片中的上衣與下著維持同一風格，直接成套穿就有完整度。"
     : "上下身維持同一個風格方向，會讓造型更完整。";
-  const technique = tip ? `搭配時可以掌握「${tip}」這個重點。` : "搭配時把視覺重點留在一處，避免元素彼此搶戲。";
+  const technique = tip ? `搭配時記得「${tip}」。` : "搭配時把視覺重點留在一處，避免元素彼此搶戲。";
 
-  return `${opening}${pieces}${technique}最後整理好上下身比例，再用一件簡潔的配件收尾，整體會更俐落。`;
+  return `${opening}${pieces}${technique}最後整理下襬與腰線比例，用簡潔配件收尾會更俐落。`;
 }
 
 /**
  * 寫那段穿搭建議。
  *
- * 由 webhook 在「卡片已經送出去之後」才呼叫 —— 這樣多一次 LLM 往返也不會
- * 拖到使用者看到推薦的時間，失敗了就只是少一段話，卡片照樣在。
+ * webhook 先組卡片再呼叫，最後放在同一批 LINE reply 裡送出。
+ * LLM 若失敗則回傳本機保底文字，不能讓卡片後面的建議靜默消失。
  */
 export async function writeOutfitAdvice(
   ctx: AdviceContext,
   provider?: string
-): Promise<string | null> {
+): Promise<string> {
   const { content, reason } = await callLLM(
     provider ?? resolveProvider(),
     ADVICE_SYSTEM_PROMPT,
