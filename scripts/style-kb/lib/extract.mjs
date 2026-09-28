@@ -132,8 +132,9 @@ const URL_OR = "https://openrouter.ai/api/v1/chat/completions";
 const NET = () => ({ timeoutMs: EXTRACT.timeoutMs, retries: EXTRACT.retries });
 
 async function viaOpenRouter(style, article, want) {
+  const preferredModel = OVERRIDE_MODEL || EXTRACT.model.openrouter;
   const base = {
-    model: OVERRIDE_MODEL || EXTRACT.model.openrouter,
+    models: [...new Set([preferredModel, "openrouter/free"])],
     max_tokens: EXTRACT.maxTokens,
     temperature: 0,
     tools: [{ type: "function", function: { name: TOOL_NAME, description: "輸出結構化穿搭", parameters: SCHEMA } }],
@@ -171,29 +172,12 @@ async function viaOpenAI(style, article, want) {
   return { data: await parseOpenAICompatible(res, `openai-${style.key}`), usage: res.usage };
 }
 
-async function viaAnthropic(style, article, want) {
-  const res = await postJson(
-    "https://api.anthropic.com/v1/messages",
-    {
-      model: EXTRACT.model.anthropic, max_tokens: EXTRACT.maxTokens,
-      tools: [{ name: TOOL_NAME, description: "輸出結構化穿搭", input_schema: SCHEMA }],
-      tool_choice: { type: "tool", name: TOOL_NAME },
-      messages: [{ role: "user", content: buildPrompt(style, article, want) }],
-    },
-    { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-    NET(),
-  );
-  const tool = (res.content || []).find((c) => c.type === "tool_use");
-  if (!tool) throw new Error("模型沒有回 tool_use");
-  return { data: tool.input, usage: res.usage };
-}
-
-const PROVIDERS = { openrouter: viaOpenRouter, openai: viaOpenAI, anthropic: viaAnthropic };
+const PROVIDERS = { openrouter: viaOpenRouter, openai: viaOpenAI };
 
 export function pickProvider(explicit) {
   const want = explicit || EXTRACT.defaultProvider;
   if (!PROVIDERS[want]) throw new Error(`未知的 LLM provider: ${want}`);
-  const keyFor = { openrouter: "OPENROUTER_API_KEY", openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY" }[want];
+  const keyFor = { openrouter: "OPENROUTER_API_KEY", openai: "OPENAI_API_KEY" }[want];
   if (!process.env[keyFor]) throw new Error(`provider=${want} 需要 ${keyFor}，.env 沒設`);
   return want;
 }

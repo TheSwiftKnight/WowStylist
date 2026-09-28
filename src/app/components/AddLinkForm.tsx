@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
  * 手動貼一條 IG 連結進 pipeline。
  *
  * POST /api/ingest 只是「送件」，回來的是 job id —— 真正的分析
- * （Apify → Claude Vision → BGE-M3 → RDS）在 Python 那邊背景跑，
+ * （Apify → OpenRouter Vision → BGE-M3 → RDS）在 Python 那邊背景跑，
  * 進度由 JobsBanner 顯示。
  */
 export default function AddLinkForm() {

@@ -1,8 +1,8 @@
-// 用 Claude 把 text_description 讀成三個標籤（風格 / 色系 / 形容詞）。
+// 用 OpenRouter 把 text_description 讀成三個標籤（風格 / 色系 / 形容詞）。
 //
 // pipeline 寫進 RDS 的 fashion_items.text_description 是一段英文描述，
 // 例如 "A cream oversized ribbed knit sweater with dropped shoulders…"。
-// 這裡把那一行丟給 Claude，要它吐回風向標要的三格：
+// 這裡把那一行丟給 OpenRouter，要它吐回風向標要的三格：
 //
 //     風格 style      極簡 / 學院風 / Y2K…（整體美學）
 //     色系 palette     霧灰 / 中藍丹寧…（主色）
@@ -15,14 +15,15 @@
 
 import { fashionTable, query } from "@/lib/rds";
 import { styleQuery } from "@/lib/styleDb";
+import { callOpenRouter, DEFAULT_OPENROUTER_MODEL } from "@/lib/openrouter";
 
-/** 一次送進 Claude 的單品數。太大容易漏行，太小浪費 round trip。 */
+/** 一次送進 LLM 的單品數。太大容易漏行，太小浪費 round trip。 */
 const BATCH_SIZE = 12;
 
 /** 一次 run 最多標幾件，免得一顆按鈕燒掉整包 token。 */
 const DEFAULT_LIMIT = 60;
 
-// 既有的風格字彙。給 Claude 當參考，讓標籤會重複、標籤雲才聚得起來；
+// 既有的風格字彙。給 LLM 當參考，讓標籤會重複、標籤雲才聚得起來；
 // 真的都不像時允許它自己造一個新的。
 const STYLE_VOCAB = [
   "極簡", "法式優雅", "美式復古", "Y2K", "學院風",
@@ -65,7 +66,8 @@ type Pending = {
 };
 
 function model(): string {
-  return process.env.TAG_MODEL || process.env.CHAT_MODEL || "claude-haiku-4-5";
+  return process.env.TAG_MODEL || process.env.OPENROUTER_MODEL ||
+    process.env.CHAT_MODEL || DEFAULT_OPENROUTER_MODEL;
 }
 
 /** 只留 5 個字以內的乾淨標籤；空字串代表這格失敗。 */
@@ -74,7 +76,7 @@ function clean(value: unknown): string {
   return value.replace(/[\s。，、,.]/g, "").slice(0, 5);
 }
 
-/** Claude 偶爾會包一層 ```json，把框拆掉再 parse。 */
+/** 模型偶爾會包一層 ```json，把框拆掉再 parse。 */
 function parseJsonArray(text: string): unknown[] {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = (fenced ? fenced[1] : text).trim();
@@ -91,7 +93,7 @@ function parseJsonArray(text: string): unknown[] {
 
 /**
  * 一批描述 → 一批標籤。回傳的 Map key 是輸入陣列的 index，
- * Claude 漏標或格式壞掉的那幾件就不會在裡面（呼叫端跳過即可）。
+ * 模型漏標或格式壞掉的那幾件就不會在裡面（呼叫端跳過即可）。
  */
 export async function generateStyleTags(
   items: { category: string; description: string }[]
@@ -99,9 +101,8 @@ export async function generateStyleTags(
   const out = new Map<number, StyleTagTriple>();
   if (items.length === 0) return out;
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.error("[styleTagger] 沒設 ANTHROPIC_API_KEY，標不了");
+  if (!process.env.OPENROUTER_API_KEY) {
+    console.error("[styleTagger] 沒設 OPENROUTER_API_KEY，標不了");
     return out;
   }
 
@@ -113,33 +114,21 @@ export async function generateStyleTags(
     .join("\n");
 
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: model(),
-        max_tokens: 100 * items.length + 200,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: listing }],
-      }),
+    const result = await callOpenRouter({
+      model: model(),
+      maxTokens: 100 * items.length + 200,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: listing },
+      ],
     });
 
-    if (!res.ok) {
-      console.error(
-        `[styleTagger] Anthropic API 失敗 HTTP ${res.status}:`,
-        await res.text()
-      );
+    if (!result.content) {
+      console.error(`[styleTagger] OpenRouter API 失敗: ${result.reason}`);
       return out;
     }
 
-    const data = (await res.json()) as {
-      content?: { type: string; text?: string }[];
-    };
-    const text = data.content?.find((c) => c.type === "text")?.text ?? "";
+    const text = result.content;
 
     for (const row of parseJsonArray(text)) {
       const r = row as Record<string, unknown>;
@@ -157,7 +146,7 @@ export async function generateStyleTags(
       out.set(i, triple);
     }
   } catch (e) {
-    console.error("[styleTagger] Anthropic API 錯誤:", e);
+    console.error("[styleTagger] OpenRouter API 錯誤:", e);
   }
 
   return out;
@@ -227,7 +216,7 @@ async function upsert(item: Pending, tags: StyleTagTriple): Promise<void> {
  * 把還沒標過的單品補上標籤。
  *
  * 已經標過的（包含 002 的種子資料、使用者自己改過的）一律不動，
- * 所以重跑很便宜：沒有新單品的時候一次 Claude 都不會打。
+ * 所以重跑很便宜：沒有新單品的時候一次 OpenRouter 都不會打。
  */
 export async function tagUntaggedGarments(
   limit = DEFAULT_LIMIT
@@ -235,7 +224,7 @@ export async function tagUntaggedGarments(
   const pending = await listUntagged(limit);
   if (pending.length === 0) return { tagged: 0, pending: 0, failed: 0 };
 
-  console.log(`[styleTagger] ${pending.length} 件還沒標，開始打 Claude`);
+  console.log(`[styleTagger] ${pending.length} 件還沒標，開始打 OpenRouter`);
 
   let tagged = 0;
 

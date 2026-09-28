@@ -19,8 +19,8 @@ IG App ──share link──> LINE chatbot (official account)
             FastAPI (./pipeline · localhost:8000 by default)
                           │ returns job_id immediately, runs the whole chain in its own background
                           ▼
-    Apify → Post/Reel Parser → Image Filter(Claude + dHash)
-          → Fashion Analyzer(Claude Vision) → BGE-M3 Encoder
+    Apify → Post/Reel Parser → Image Filter(OpenRouter Vision + dHash)
+          → Fashion Analyzer(OpenRouter Vision) → BGE-M3 Encoder
                           │
                           ▼
                        Amazon RDS (PostgreSQL)
@@ -50,7 +50,7 @@ One incoming link turns into **several rows**: Reel → frame extraction → fil
 One repo, two processes (Next.js + Python), one `.env`.
 
 ```bash
-cp .env.example .env    # LINE keys / DB_* / APIFY_TOKEN / HF_TOKEN / ANTHROPIC_API_KEY
+cp .env.example .env    # LINE keys / DB_* / APIFY_TOKEN / HF_TOKEN / OPENROUTER_API_KEY
 ```
 
 Run every command from the **project root**.
@@ -124,7 +124,7 @@ WowStylist/
 │
 ├── pipeline/                 Python analysis service (formerly HachThon)
 │   ├── api/main.py           FastAPI
-│   ├── fashion_retrieval/    Apify → Claude → BGE-M3 → fashion_items
+│   ├── fashion_retrieval/    Apify → OpenRouter Vision → BGE-M3 → fashion_items
 │   └── migrations/           table-creation SQL
 │
 └── .env                      shared by both sides
@@ -146,7 +146,7 @@ WowStylist/
 ## Why two layers of async?
 
 Running the full pipeline on one post takes tens of seconds to a few minutes
-(one Apify call + one Claude Vision call per image + one BGE-M3 call per garment).
+(one Apify call + one OpenRouter Vision call per image + one BGE-M3 call per garment).
 Meanwhile:
 
 - LINE's `replyToken` is only valid for a few seconds
@@ -188,7 +188,7 @@ distinguished by `source`:
 |--------|-----------|---------|
 | `source_item_id` | `<shortcode>_<position>_<index>_<category>` | `product_id` |
 | `category` | `top` / `pants` | same |
-| `text_description` | semantic description written by Claude Vision | same |
+| `text_description` | semantic description written by a vision model | same |
 | `embedding` | BGE-M3, 1024 dims (L2-normalized) | same |
 | `image_data` / `image_mime` | post image / Reel frame | product image |
 | `display_tags` / `outfit_tags` | ✓ | NULL |
@@ -232,4 +232,4 @@ automatically, so nothing changes on the Python side.
   removed once more by comparing description text
   (`GARMENT_DEDUP_THRESHOLD`, default 0.82). Two rows of the same outfit can still
   slip through.
-- One Reel can trigger a dozen-plus Claude Vision calls — watch your API usage.
+- One Reel can trigger a dozen-plus OpenRouter Vision calls — watch your free-tier rate limit.

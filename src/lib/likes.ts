@@ -102,7 +102,7 @@ export async function likeProduct(
       cols.has("product_url") ? "product_url" : "NULL AS product_url",
       cols.has("image_data") ? "image_data" : "NULL AS image_data",
       cols.has("image_mime") ? "image_mime" : "NULL AS image_mime",
-      // 商品表不一定有 Claude 寫的描述；沒有就退回 title
+      // 商品表不一定有 vision LLM 寫的描述；沒有就退回 title
       cols.has("text_description")
         ? "text_description"
         : "NULL AS text_description",

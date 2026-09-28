@@ -66,6 +66,8 @@ function checkEnv(): Check {
     productsTable,
     pipelineApiUrl: process.env.PIPELINE_API_URL ?? null,
     pipelineTokenSet: Boolean(process.env.PIPELINE_TOKEN),
+    openRouterKeySet: Boolean(process.env.OPENROUTER_API_KEY),
+    openRouterModel: process.env.OPENROUTER_MODEL ?? "qwen/qwen3.8-27b:free",
   };
 }
 

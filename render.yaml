@@ -22,8 +22,12 @@ services:
       # ── 外部服務 ──
       - key: APIFY_TOKEN
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: OPENROUTER_API_KEY
         sync: false
+      - key: OPENROUTER_MODEL
+        value: qwen/qwen3.8-27b:free
+      - key: OPENROUTER_TIMEOUT_SECONDS
+        value: "60"
       # 沒填的話 fashion_encoder.py 在 import 時就 raise，服務起不來
       - key: HF_TOKEN
         sync: false
@@ -61,7 +65,7 @@ services:
         value: products
 
       # ── 服務本身 ──
-      # 公開網址，這個一定要設，不然誰都能燒你的 Apify / Claude 額度
+      # 公開網址，這個一定要設，不然誰都能燒你的 Apify / OpenRouter 配額
       - key: PIPELINE_TOKEN
         sync: false
       - key: ALLOWED_ORIGINS

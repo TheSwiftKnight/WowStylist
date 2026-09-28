@@ -172,7 +172,7 @@ function buildSlides(stats: WrapStats): Slide[] {
         <>
           <p className="wrap__kicker">03 — 你的風格前五</p>
           <p className="wrap__lede">
-            Claude 讀完你每一件收藏，數出來最常出現的幾種美學。
+            AI 讀完你每一件收藏，數出來最常出現的幾種美學。
           </p>
 
           {styles.length === 0 ? (

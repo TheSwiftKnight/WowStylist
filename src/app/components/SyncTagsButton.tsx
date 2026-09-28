@@ -7,10 +7,10 @@ import { useRouter } from "next/navigation";
  * 從收藏的單品長出風向標的標籤。
  *
  * 按下去會做兩件事（/api/tags/sync）：
- *   1. 還沒標過的單品 → text_description 丟給 Claude 要三個標籤
+ *   1. 還沒標過的單品 → text_description 丟給 OpenRouter 要三個標籤
  *   2. 把所有單品的標籤依出現次數算成權重，長到風向標上
  *
- * 平常 LINE 收藏完會自動跑一次，這顆是補跑用的（Claude 掛掉、或改了標籤想重算）。
+ * 平常 LINE 收藏完會自動跑一次，這顆是補跑用的（LLM 掛掉、或改了標籤想重算）。
  */
 export default function SyncTagsButton({ untagged = 0 }: { untagged?: number }) {
   const [busy, setBusy] = useState(false);
@@ -28,7 +28,7 @@ export default function SyncTagsButton({ untagged = 0 }: { untagged?: number }) 
       }
       const data = (await res.json()) as { tagged?: number };
       setNote(
-        data.tagged ? `Claude 新標了 ${data.tagged} 件` : "沒有新單品要標"
+        data.tagged ? `AI 新標了 ${data.tagged} 件` : "沒有新單品要標"
       );
       router.refresh();
     } finally {
@@ -39,7 +39,7 @@ export default function SyncTagsButton({ untagged = 0 }: { untagged?: number }) 
   const label = busy
     ? "標籤產生中…"
     : untagged > 0
-      ? `用 Claude 標 ${untagged} 件新單品`
+      ? `用 AI 標 ${untagged} 件新單品`
       : "從收藏更新標籤";
 
   return (

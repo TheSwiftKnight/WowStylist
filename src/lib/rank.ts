@@ -560,7 +560,7 @@ type ProductSource = {
   hasTitle: boolean;
   hasPrice: boolean;
   hasUrl: boolean;
-  /** 有沒有 Claude 寫的文字描述（寫穿搭建議時要用） */
+  /** 有沒有 vision LLM 寫的文字描述（寫穿搭建議時要用） */
   hasDescription: boolean;
   /** 這張表的 bottom 叫什麼：'bottom' 或 'pants' */
   bottomCategory: string;

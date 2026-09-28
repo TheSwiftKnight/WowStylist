@@ -1,5 +1,10 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { siteUrl } from "@/lib/url";
+import {
+  callOpenRouter,
+  DEFAULT_OPENROUTER_MODEL,
+  openRouterModels,
+} from "@/lib/openrouter";
 import { join } from "path";
 import {
   loadStyleCandidates,
@@ -25,9 +30,8 @@ import {
 // 穿搭對話核心模組。
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
-//   - "anthropic"  : Claude API（需 ANTHROPIC_API_KEY，預設 claude-haiku-4-5-20251001）★ 預設
-//                    原本這裡是 OpenRouter 的 Nemotron，已整個換成 Claude；
-//                    兩邊 API 的差異寫在下面 callAnthropic 上方。
+//   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY）★ 預設
+//                    預設 Qwen3.8 27B 免費多模態模型，不可用時 fallback 到 openrouter/free。
 //   - "openai"     : OpenAI API（需 OPENAI_API_KEY）
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
@@ -125,10 +129,11 @@ function appendTurn(session: FashionSession, turn: ChatTurn): void {
 
 // ── Intent 解析 ───────────────────────────────────────────────────────────────
 // 規則：有 [item:] → B；有 [keywords:] 但沒有 [item:] → C；否則 → "other"（含 A）
+// 同時接受中文全形冒號，避免 LLM 格式幾乎正確卻被當成 other。
 
 function parseIntent(classifierOutput: string): Intent {
-  if (/\[item:/i.test(classifierOutput)) return "B";
-  if (/\[keywords:/i.test(classifierOutput)) return "C";
+  if (/\[item\s*[:：]/i.test(classifierOutput)) return "B";
+  if (/\[keywords\s*[:：]/i.test(classifierOutput)) return "C";
   return "other"; // 含 A 意圖（無標籤）與閒聊
 }
 
@@ -148,7 +153,7 @@ function isGreetingOrHowTo(text: string): boolean {
  * 而且把 aliases / occasions / seasons 都列出來，因為使用者打進來的
  * 常常不是風格名，而是場合（「婚禮賓客」）或季節（「秋天通勤」）。
  *
- * 約 7000 字元／3.5k tokens，Claude 吃得下；模組層算一次就快取住。
+ * 約 7000 字元／3.5k tokens，Qwen3.8 27B 吃得下；模組層算一次就快取住。
  */
 function buildStyleDatabaseSection(): string {
   const profiles = listStyleProfiles();
@@ -232,146 +237,27 @@ ${buildStyleDatabaseSection()}
 // LLM 回傳結果，content=null 時 reason 說明失敗原因
 type LLMResult = { content: string; reason: string } | { content: null; reason: string };
 
-// ── LLM 呼叫：Claude（Anthropic Messages API）──────────────────────────────
-//
-// 跟先前用的 OpenRouter / Nemotron（OpenAI 相容格式）幾個關鍵差異：
-//
-//   1. 端點與認證
-//        OpenAI 相容：POST /chat/completions，Authorization: Bearer <key>
-//        Claude：      POST /v1/messages，x-api-key: <key> + anthropic-version
-//   2. system prompt
-//        OpenAI 相容：塞進 messages[0]，role="system"
-//        Claude：      是 body 最上層的 `system` 欄位，不進 messages
-//   3. max_tokens
-//        Claude 是**必填**，漏了直接 400
-//   4. 回應形狀
-//        OpenAI 相容：choices[0].message.content（字串，有些模型給 chunk 陣列）
-//        Claude：      content[] 是 block 陣列，文字在 type==="text" 的 .text，
-//                      而且可能不只一塊，要全部接起來
-//   5. 截斷判斷
-//        OpenAI 相容：choices[0].finish_reason === "length"
-//        Claude：      stop_reason === "max_tokens"
-//   6. 錯誤格式
-//        Claude 用 HTTP 狀態碼 + { type:"error", error:{ type, message } }；
-//        不像 OpenRouter 會拿 HTTP 200 包一個 error 物件回來，所以不用再多檢查一層
-//   7. temperature 範圍 0~1（OpenAI 是 0~2），而且沒有 reasoning / reasoning_effort
-//
-// 這裡刻意不做重試：整條流程跑在 webhook 的 after() 背景裡，時間預算很緊
-// （見 route.ts 的說明），寧可把失敗原因講清楚，讓上層降級到 rules。
-
-/** 最快也最便宜；分類這種照表填欄位的工作夠用。要更準可設 CHAT_MODEL=claude-sonnet-5。 */
-const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
-
-function claudeModel(): string {
-  return process.env.CHAT_MODEL || DEFAULT_CLAUDE_MODEL;
-}
-
-async function callAnthropic(
+// ── LLM 呼叫：OpenRouter ───────────────────────────────────────────────────────────
+async function callOpenRouterLLM(
   systemPrompt: string,
   userMessage: string,
   maxTokens = 400,
   temperature = 0
 ): Promise<LLMResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    const reason = "NO_API_KEY: ANTHROPIC_API_KEY 未設定";
-    console.error(`[chat] ${reason}`);
-    return { content: null, reason };
+  const result = await callOpenRouter({
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+    maxTokens,
+    temperature,
+  });
+  if (!result.content) {
+    console.error(`[chat] OpenRouter 失敗（${result.reason}） models=${openRouterModels().join(" -> ")}`);
+    return { content: null, reason: result.reason };
   }
-
-  const model = claudeModel();
-  const timeoutMs = Number(process.env.CHAT_TIMEOUT_MS || 8000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const startedAt = Date.now();
-
-  try {
-    console.log(`[chat] Claude 送出請求 model=${model} timeout=${timeoutMs}ms`);
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: maxTokens,   // Claude 必填
-        temperature,             // 分類用 0；寫建議時會調高一點
-        system: systemPrompt,    // 最上層欄位，不是 messages[0]
-        messages: [{ role: "user", content: userMessage }],
-      }),
-    });
-    clearTimeout(timer);
-    const elapsed = Date.now() - startedAt;
-
-    if (!res.ok) {
-      const body = await res.text();
-      let detail = body.slice(0, 300);
-      try {
-        const parsed = JSON.parse(body) as { error?: { type?: string; message?: string } };
-        if (parsed.error) detail = `${parsed.error.type}: ${parsed.error.message}`;
-      } catch { /* 不是 JSON 就用原文 */ }
-
-      const hint =
-        res.status === 401 ? "（金鑰不對或沒權限）"
-        : res.status === 404 ? `（模型名稱可能有誤：${model}）`
-        : res.status === 429 ? "（rate limit 或額度用完）"
-        : res.status === 529 ? "（Anthropic 端過載，稍後再試）"
-        : "";
-
-      const reason = `HTTP_${res.status} (${elapsed}ms)${hint}: ${detail}`;
-      console.error(`[chat] Claude ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    const data = (await res.json()) as {
-      content?: { type: string; text?: string }[];
-      stop_reason?: string;
-      usage?: { input_tokens?: number; output_tokens?: number };
-    };
-
-    if (data.stop_reason === "max_tokens") {
-      const reason = `TRUNCATED stop_reason=max_tokens (${elapsed}ms) — 調高 maxTokens`;
-      console.error(`[chat] Claude ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    // content 是 block 陣列，文字可能被切成好幾塊
-    const content = (data.content ?? [])
-      .filter((c) => c.type === "text")
-      .map((c) => c.text ?? "")
-      .join("")
-      .trim();
-
-    if (!content) {
-      const raw = JSON.stringify(data).slice(0, 200);
-      const reason = `EMPTY_CONTENT (${elapsed}ms) stop_reason=${data.stop_reason} raw=${raw}`;
-      console.error(`[chat] Claude ${reason} model=${model}`);
-      return { content: null, reason };
-    }
-
-    console.log(
-      `[chat] Claude 回應成功 (${elapsed}ms) stop_reason=${data.stop_reason} ` +
-      `tokens=${data.usage?.input_tokens ?? "?"}/${data.usage?.output_tokens ?? "?"}`
-    );
-    return { content, reason: "ok" };
-
-  } catch (e: unknown) {
-    clearTimeout(timer);
-    const elapsed = Date.now() - startedAt;
-    let reason: string;
-    if (e instanceof Error && e.name === "AbortError") {
-      reason = `TIMEOUT >${elapsed}ms — 可調 CHAT_TIMEOUT_MS，或換更快的模型`;
-    } else if (e instanceof TypeError) {
-      reason = `NETWORK_ERROR (${elapsed}ms): ${e.message}`;
-    } else {
-      reason = `UNKNOWN_ERROR (${elapsed}ms): ${String(e)}`;
-    }
-    console.error(`[chat] Claude ${reason} model=${claudeModel()}`);
-    return { content: null, reason };
-  }
+  console.log(`[chat] OpenRouter 回應成功 model=${result.model ?? "unknown"}`);
+  return { content: result.content, reason: "ok" };
 }
 
 // ── LLM 呼叫：OpenAI ─────────────────────────────────────────────────────────
@@ -415,11 +301,8 @@ async function callOpenAI(
 /**
  * 決定要用哪個 provider。
  *
- * CHAT_PROVIDER 沒設就看有哪把金鑰（Claude 優先）。
- *
- * "openrouter" 是舊值 —— Nemotron 那條路已經整個移除了。舊的部署環境變數
- * 可能還留著，直接當成未知 provider 會靜默降級到 rules（看起來像 LLM 壞了），
- * 所以這裡認得它、印一行警告、然後走 Claude。
+ * CHAT_PROVIDER 沒設就看有哪把金鑰（OpenRouter 優先）。
+ * 舊的 anthropic 值自動導向 OpenRouter，讓部署切換期間不會突然掉到 rules。
  *
  * ⚠️ 任何要決定 provider 的地方都必須呼叫這支，不要自己寫
  * `process.env.CHAT_PROVIDER || (...)`。之前 webhook 就是自己算了一份，
@@ -430,23 +313,22 @@ async function callOpenAI(
 export function resolveProvider(): string {
   const explicit = (process.env.CHAT_PROVIDER || "").trim().toLowerCase();
 
-  if (explicit === "openrouter") {
+  if (explicit === "anthropic") {
     console.warn(
-      "[chat] CHAT_PROVIDER=openrouter 是舊設定（Nemotron 已移除），自動改用 anthropic。" +
-      "請把環境變數改成 anthropic 或留空。"
+      "[chat] CHAT_PROVIDER=anthropic 是舊設定，自動改用 openrouter。"
     );
-    return "anthropic";
+    return "openrouter";
   }
 
   if (explicit) {
-    if (!["anthropic", "openai", "rules"].includes(explicit)) {
+    if (!["openrouter", "openai", "rules"].includes(explicit)) {
       console.warn(`[chat] 不認得的 CHAT_PROVIDER=${explicit}，改用自動偵測`);
     } else {
       return explicit;
     }
   }
 
-  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  if (process.env.OPENROUTER_API_KEY) return "openrouter";
   if (process.env.OPENAI_API_KEY) return "openai";
   return "rules";
 }
@@ -459,7 +341,7 @@ async function callLLM(
   maxTokens = 400,
   temperature = 0
 ): Promise<LLMResult> {
-  if (provider === "anthropic") return callAnthropic(systemPrompt, userMessage, maxTokens, temperature);
+  if (provider === "openrouter") return callOpenRouterLLM(systemPrompt, userMessage, maxTokens, temperature);
   if (provider === "openai") {
     const content = await callOpenAI(systemPrompt, userMessage, maxTokens);
     return content ? { content, reason: "ok" } : { content: null, reason: "OPENAI_NO_RESPONSE" };
@@ -494,6 +376,43 @@ function chatWithRules(text: string): string {
 // 注意：這裡讀的是「給 prompt 看的文字偏好」。rank.ts 另外有
 // loadUserPreferenceEmbeddings()，那個是算 S_user 用的向量，來源是 IG RDS，
 // 兩者互不影響。
+/**
+ * 沒有 LLM，或 LLM 暫時失敗時的本地分類器。
+ *
+ * 以前 rules provider 會在進入推薦 pipeline 前直接 return，所以不管使用者
+ * 已經說了「婚禮、預算 3000、簡約」多完整的需求，都只會看到同一句
+ * 追問。這裡用 style KB 現有的名稱／別名／場合／季節做可預期的
+ * fallback，並產生跟 LLM 一樣的標籤格式，讓後面照常查庫與排序。
+ */
+function classifyWithRules(text: string): string | null {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return null;
+
+  const styleMatches = matchStylesByQuery(clean).slice(0, 5);
+  const hasFashionSignal =
+    styleMatches.length > 0 ||
+    /穿搭|穿什麼|怎麼穿|搭配|衣服|服裝|上衣|下身|下著|褲|裙|外套|洋裝|連身裙|鞋|造型|風格|預算|價格|元以內|約會|婚禮|通勤|上班|面試|聚餐|派對|旅行|度假|海邊|正式|休閒/.test(clean);
+
+  if (!hasFashionSignal) return null;
+
+  // 標籤不允許帶進使用者的方括號，否則後面的 regex 會提前截斷。
+  const safeQuery = clean.replace(/[\[\]]/g, " ").slice(0, 500);
+  const price = clean.match(
+    /(?:預算\s*(?:大概|約|是)?\s*)?(?:NT\$|TWD|\$)?\s*\d[\d,]*(?:\s*(?:元|塊))?\s*(?:以內|以下|左右|上下)?/i
+  )?.[0]?.trim();
+
+  const lines: string[] = [];
+  if (styleMatches.length > 0) {
+    const styles = styleMatches
+      .map((m) => m.profile.styleZh ?? m.profile.style)
+      .filter((name, index, all) => all.indexOf(name) === index);
+    lines.push(`[風格: ${styles.join(", ")}]`);
+  }
+  lines.push(clean, `[keywords: ${safeQuery}]`);
+  if (price) lines.push(`[price: ${price}]`);
+  return lines.join("\n");
+}
+
 function loadUserPrefs(userId: string | null): string | null {
   if (!userId) return null;
   try {
@@ -1218,7 +1137,7 @@ export async function generateChatReply(
 
   const provider = resolveProvider();
   const model = process.env.CHAT_MODEL ||
-    (provider === "anthropic" ? DEFAULT_CLAUDE_MODEL :
+    (provider === "openrouter" ? (process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL) :
      provider === "openai"    ? "gpt-4o-mini" : "-");
 
   if (debug) {
@@ -1228,10 +1147,6 @@ export async function generateChatReply(
   D("");
 
   // ── rules 模式 ──────────────────────────────────────────────────────────────
-  if (provider === "rules") {
-    return { text: chatWithRules(text) };
-  }
-
   // ── 問候 / 使用說明：不進 session，直接 rules 回應 ─────────────────────────
   if (isGreetingOrHowTo(text)) {
     console.log(`[chat] 問候/使用說明，直接 rules 回應`);
@@ -1278,26 +1193,48 @@ export async function generateChatReply(
     ? `${session.accumulatedRequest}\n\n${inputText}`
     : inputText;
 
-  console.log(`[chat] 累積需求長度 ${accumulated.length} 字元，送 LLM 分析`);
+  console.log(`[chat] 累積需求長度 ${accumulated.length} 字元，進行意圖分類`);
   D(`[2/6] 📚 累積需求 ${accumulated.length} 字元（本輪 ${inputText.length} 字元）`);
+
+  // rules fallback 不要吃到「使用者偏好紀錄」標題本身，否則新 session 裡
+  // 一句無關文字也可能因舊偏好而被誤判成穿搭需求。
+  const rulesInput = existingSession?.accumulatedRequest
+    ? `${existingSession.accumulatedRequest}\n\n${inputText}`
+    : inputText;
 
   // ── 單次 LLM 分析（送累積需求）→ 解析出 [風格:] [item:] [keywords:] [price:] ─
   D("[3/6] 🧠 意圖分類 + 風格匹配（CLASSIFIER_SYSTEM_PROMPT）...");
-  const { content: classifiedResult, reason: classifyReason } = await callLLM(
-    provider,
-    classifierSystemPrompt(),
-    accumulated,
-    700
-  );
+  const classification = provider === "rules"
+    ? { content: classifyWithRules(rulesInput), reason: "RULES_PROVIDER" }
+    : await callLLM(provider, classifierSystemPrompt(), accumulated, 700);
+  let classifiedResult = classification.content;
+  const classifyReason = classification.reason;
 
   if (!classifiedResult) {
-    console.warn(`[chat] 分類器無回應（${classifyReason}），降級到 rules`);
-    const errDetail = debug ? `\n原因：${classifyReason}` : "";
-    await onProgress?.(`❌ 分析失敗，降級到關鍵字模式${errDetail}`);
-    return { text: chatWithRules(text) };
+    classifiedResult = classifyWithRules(rulesInput);
+    if (classifiedResult) {
+      console.warn(`[chat] 分類器無回應（${classifyReason}），改用本地 style KB 分類`);
+      const errDetail = debug ? `\n原因：${classifyReason}` : "";
+      await onProgress?.(`⚠️ AI 分析暫時不可用，改用本地風格匹配${errDetail}`);
+    } else {
+      console.warn(`[chat] 分類器無回應（${classifyReason}），本地規則也無法判斷`);
+      return { text: chatWithRules(text) };
+    }
   }
 
-  const intent = parseIntent(classifiedResult);
+  let intent = parseIntent(classifiedResult);
+
+  // LLM 偶爾會說對了內容卻漏掉 [keywords:] 標籤。若本地 KB 明顯認得
+  // 這是穿搭需求，不要因為一個格式差異就回到固定追問。
+  if (intent === "other") {
+    const rulesClassification = classifyWithRules(rulesInput);
+    if (rulesClassification) {
+      console.warn("[chat] LLM 分類缺少結構化標籤，改用本地 style KB 分類");
+      classifiedResult = rulesClassification;
+      intent = parseIntent(classifiedResult);
+    }
+  }
+
   console.log(`[chat] 分類結果 intent=${intent}: ${classifiedResult.slice(0, 200)}`);
   D(`      ↳ intent=${intent}｜${classifiedResult.slice(0, 120).replace(/\n/g, " ")}`);
 
@@ -1367,7 +1304,7 @@ export function getSessionHistory(userId: string): ChatTurn[] | null {
  * 手動觸發偏好檔更新（供 test script、webhook 的「結束這次討論」等外部呼叫）。
  * 會讀取 sessionStore 中最後一筆該 userId 的 session（active 或 ended 皆可）。
  * @param userId    LINE userId 或 test 用的任意字串
- * @param provider  LLM provider（anthropic / openai / rules）
+ * @param provider  LLM provider（openrouter / openai / rules）
  */
 export async function updateUserPreferenceFile(
   userId: string,

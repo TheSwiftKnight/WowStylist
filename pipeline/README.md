@@ -17,8 +17,8 @@ LINE  ──post link──>  Next.js /api/line/webhook
               fashion_retrieval/pipeline.py
                   Apify           fetches raw post / Reel JSON
                   Parser          downloads images; grabs one Reel frame every 2 s
-                  Image Filter    Claude drops images with no clothes + dHash drops duplicate frames
-                  Analyzer        Claude Vision → one description + tags per garment
+                  Image Filter    OpenRouter Vision drops images with no clothes + dHash drops duplicate frames
+                  Analyzer        OpenRouter Vision → one description + tags per garment
                   Encoder         BGE-M3 → 1024-dim vector
                   DB Writer       upserts into fashion_items
                           │ every stage writes back ingest_jobs.status / stage
@@ -35,8 +35,8 @@ LINE  ──post link──>  Next.js /api/line/webhook
 | `fashion_retrieval/apify_client.py` | IG URL → raw Apify JSON |
 | `fashion_retrieval/post_parser.py` | Post / carousel → local images + caption |
 | `fashion_retrieval/reel_parser.py` | Reel → downloads the mp4, grabs a frame every 2 s |
-| `fashion_retrieval/image_filter.py` | Claude semantic filtering + dHash near-duplicate frame removal |
-| `fashion_retrieval/fashion_analyzer.py` | Claude Vision → garment description + display/outfit tags |
+| `fashion_retrieval/image_filter.py` | OpenRouter semantic filtering + dHash near-duplicate frame removal |
+| `fashion_retrieval/fashion_analyzer.py` | OpenRouter Vision → garment description + display/outfit tags |
 | `fashion_retrieval/fashion_encoder.py` | BGE-M3 (Hugging Face Inference API) |
 | `fashion_retrieval/fashion_formatter.py` | Builds the unified item format and encodes it |
 | `fashion_retrieval/db_writer.py` | Writes into `fashion_items`: auto column detection, NOT NULL pre-checks, `(source, source_item_id)` upsert |
@@ -140,7 +140,7 @@ trial is up.
 Use the same values as your local `.env`:
 
 ```
-APIFY_TOKEN            ANTHROPIC_API_KEY       HF_TOKEN
+APIFY_TOKEN            OPENROUTER_API_KEY      HF_TOKEN
 DB_HOST                DB_USER                 DB_PASSWORD
 PRODUCTS_DB_HOST       PRODUCTS_DB_USER        PRODUCTS_DB_PASSWORD
 PIPELINE_TOKEN         ALLOWED_ORIGINS
@@ -152,7 +152,7 @@ defaults in `render.yaml`.
 Two things:
 
 - **`PIPELINE_TOKEN` is mandatory this time.** Leaving it empty locally is fine, but
-  this URL is public — without it anyone can burn your Apify and Claude credits.
+  this URL is public — without it anyone can burn your Apify and OpenRouter quota.
   Generate one with `openssl rand -hex 24` and set the same value on the Next.js side
   (Vercel + local `.env`).
 - Set `ALLOWED_ORIGINS` to `https://wow-stylist.vercel.app` (comma-separated for several).
@@ -237,7 +237,7 @@ job started.
 
 ### Cost and limits
 
-- One Reel triggers a dozen-plus Claude Vision calls and takes one to several minutes.
+- One Reel triggers a dozen-plus OpenRouter Vision calls and takes one to several minutes.
   That kind of bursty workload is fine on Render's free plan, but a container that
   stays up all the time eats the full 750 hours — just barely enough.
 - The container filesystem is ephemeral. Downloaded images and frames are written to
@@ -309,12 +309,12 @@ Re-running the same post hits the `(source, source_item_id)` unique index and up
 |-------|----------------|
 | `apify` | Apify × 1 |
 | `parse` | IG CDN (downloads images / video) |
-| `filter` | Claude × 1 (all images in one call) |
-| `analyze` | Claude Vision × N (one per image) |
+| `filter` | OpenRouter Vision × 1 (all images in one call) |
+| `analyze` | OpenRouter Vision × N (one per image) |
 | `encode` | HF × M (one per garment) |
 | `write` | RDS |
 
-One Reel can mean a dozen-plus Claude Vision calls. `GARMENT_DEDUP_THRESHOLD`
+One Reel can mean a dozen-plus OpenRouter Vision calls. `GARMENT_DEDUP_THRESHOLD`
 (default 0.82) drops garments whose descriptions are too similar before the encode
 stage; set it to 0 to turn that off.
 
@@ -323,7 +323,7 @@ stage; set it to 0 to turn that off.
 All of them live in `../.env` (shared with Next.js). The pipeline uses:
 
 ```
-APIFY_TOKEN, ANTHROPIC_API_KEY, HF_TOKEN,
+APIFY_TOKEN, OPENROUTER_API_KEY, HF_TOKEN,
 DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE,
 FASHION_TABLE, PIPELINE_TOKEN, ALLOWED_ORIGINS, GARMENT_DEDUP_THRESHOLD
 ```

@@ -26,7 +26,7 @@ import { likeProduct } from "@/lib/likes";
 //
 // 路徑 1 是「兩層非同步」：
 //   LINE 秒收到回覆 → Next.js 背景送件 → Python 背景分析
-// 因為整條 pipeline（Apify + 每張圖一次 Claude Vision + 每件衣服一次 BGE-M3）
+// 因為整條 pipeline（Apify + 每張圖一次 OpenRouter Vision + 每件衣服一次 BGE-M3）
 // 要跑幾十秒到幾分鐘。使用者在網頁上看到的進度來自 ingest_jobs 表（GET /api/jobs）。
 //
 // 為什麼用 Push API 而不是 Reply API：

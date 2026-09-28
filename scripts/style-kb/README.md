@@ -37,7 +37,7 @@ npm i cheerio json5
 # extraction layer — this is the default
 OPENROUTER_API_KEY=sk-or-v1-...
 KB_LLM_PROVIDER=openrouter                # default, can be omitted
-KB_EXTRACT_MODEL=                         # empty = deepseek/deepseek-v4-flash-0731:free
+KB_EXTRACT_MODEL=                         # empty = OPENROUTER_MODEL or qwen/qwen3.8-27b:free
 
 # search layer (pick one; Exa recommended — search + text in one call)
 EXA_API_KEY=...        # $7/1k calls, $20 on signup + $10/month
@@ -233,7 +233,7 @@ Measured 2026-09-20 (same balletcore article, target 5 outfits):
 
 | Model | Seconds | Returned/accepted | Notes |
 |---|---|---|---|
-| `deepseek/deepseek-v4-flash-0731:free` | 92.1 | 4 / 4 | **current default** |
+| `deepseek/deepseek-v4-flash-0731:free` | 92.1 | 4 / 4 | historical benchmark; endpoint may be unavailable |
 | `nvidia/nemotron-3.5-lightning:free` | 166.7 | 2 / 2 | |
 | `nvidia/nemotron-3-ultra-550b-a55b:free` | 226.4 | 3 / 3 | old default |
 | `google/gemma-4-26b-a4b-it:free` | — | — | provider returned 429 |
@@ -250,8 +250,9 @@ KB_CONCURRENCY=6 KB_REASONING_EFFORT="" KB_ARTICLE_CHARS=6000 node scripts/style
 KB_EXTRACT_MODEL=openai/gpt-oss-120b node scripts/style-kb/crawl.mjs
 ```
 
-⚠️ The OpenRouter free tier allows **200 req/day**. Now that we extract 5 outfits per
-call, 50 styles only take about 50–100 calls, so the quota is comfortable.
+⚠️ OpenRouter free-model availability and rate limits change over time. The code tries
+the preferred Qwen3.8 27B free endpoint first and falls back to `openrouter/free`; check
+the OpenRouter dashboard before a large crawl.
 
 ## 7. Troubleshooting
 

@@ -1,6 +1,6 @@
 // 呼叫 ./pipeline 的 FastAPI service（同一個 repo，但是獨立的 Python 行程）。
 //
-//   Next.js  ──POST /ingest──>  FastAPI  ──背景──>  Apify → Claude → BGE-M3 → RDS
+//   Next.js  ──POST /ingest──>  FastAPI  ──背景──>  Apify → OpenRouter Vision → BGE-M3 → RDS
 //
 // 這支只負責「把連結丟過去」。整條 pipeline 要跑幾十秒到幾分鐘，
 // 所以 FastAPI 立刻回一個 job_id，進度寫在 RDS 的 ingest_jobs，

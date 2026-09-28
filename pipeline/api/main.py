@@ -153,7 +153,7 @@ def health() -> dict:
 
     required_env = [
         "APIFY_TOKEN",
-        "ANTHROPIC_API_KEY",
+        "OPENROUTER_API_KEY",
         "HF_TOKEN",
         "DB_HOST",
         "DB_NAME",
@@ -203,6 +203,14 @@ def health() -> dict:
     return {
         "ok": db_ok and not missing and not missing_columns,
         "missing_env": missing,
+        "llm": {
+            "provider": "openrouter",
+            "model": os.getenv(
+                "OPENROUTER_VISION_MODEL",
+                os.getenv("OPENROUTER_MODEL", "qwen/qwen3.8-27b:free"),
+            ),
+            "fallback": "openrouter/free",
+        },
         "database": {
             "ok": db_ok,
             "error": db_error,
@@ -227,7 +235,7 @@ def ingest(
     收一條 IG 連結，建 job，背景把整條 pipeline 跑完。
 
     立刻回覆，因為整條跑完要幾十秒到幾分鐘
-    （Apify + 每張圖一次 Claude Vision + 每件衣服一次 BGE-M3）。
+    （Apify + 每張圖一次 OpenRouter Vision + 每件衣服一次 BGE-M3）。
     """
 
     check_token(x_pipeline_token)

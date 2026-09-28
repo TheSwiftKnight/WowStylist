@@ -56,25 +56,12 @@ import mimetypes
 import re
 from typing import Optional
 
-import mimetypes
-
 from dotenv import load_dotenv
 load_dotenv()
 
-from anthropic import Anthropic
+from .openrouter_client import chat_completion, configured_model, image_content
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-
-if not ANTHROPIC_API_KEY:
-    raise RuntimeError(
-        "ANTHROPIC_API_KEY is not set."
-    )
-
-client = Anthropic(
-    api_key=ANTHROPIC_API_KEY
-)
-
-MODEL = "claude-sonnet-4-6"
+MODEL = configured_model()
 
 
 
@@ -89,7 +76,7 @@ SUPPORTED_CATEGORIES = {
 # ============================================================
 
 
-def prepare_claude_image(
+def prepare_image(
     image,
     mime_type: str = "image/jpeg",
 ) -> tuple[str, str]:
@@ -538,30 +525,22 @@ def analyze_image(
     # Prepare image
     # ========================================================
 
-    image_media_type, image_base64 = prepare_claude_image(
+    image_media_type, image_base64 = prepare_image(
         image,
         mime_type=mime_type,
     )
 
     # ========================================================
-    # Call Claude
+    # Call OpenRouter (Qwen3.8 27B free preferred; free multimodal fallback)
     # ========================================================
 
-    response = client.messages.create(
-        model=MODEL,
+    raw_response, actual_model = chat_completion(
         max_tokens=2048,
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": image_media_type,
-                            "data": image_base64,
-                        },
-                    },
+                    image_content(image_media_type, image_base64),
                     {
                         "type": "text",
                         "text": prompt,
@@ -570,24 +549,6 @@ def analyze_image(
             }
         ],
     )
-
-    # ========================================================
-    # Get response text
-    # ========================================================
-
-    raw_response = ""
-
-    for block in response.content:
-        if block.type == "text":
-            raw_response += block.text
-
-    raw_response = raw_response.strip()
-
-    if not raw_response:
-        raise ValueError(
-            f"Claude returned empty content. "
-            f"Model: {MODEL}"
-        )
 
     # ========================================================
     # Parse JSON
@@ -601,7 +562,7 @@ def analyze_image(
     except Exception:
         print(
             f"[Fashion Analyzer] Invalid response "
-            f"from Claude: {MODEL}"
+            f"from OpenRouter: {actual_model}"
         )
 
         print(
@@ -613,7 +574,7 @@ def analyze_image(
 
     if not isinstance(result, dict):
         raise ValueError(
-            "Claude response must be a JSON object."
+            "Vision response must be a JSON object."
         )
     
 

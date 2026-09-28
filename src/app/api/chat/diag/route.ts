@@ -62,7 +62,8 @@ export async function GET(req: Request) {
     resolvedProvider: resolveProvider(),
     CHAT_MODEL: process.env.CHAT_MODEL || "(預設)",
     CHAT_DEBUG: process.env.CHAT_DEBUG || "(未設)",
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? "已設定" : "❌ 沒有",
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? "已設定" : "❌ 沒有",
+    OPENROUTER_MODEL: process.env.OPENROUTER_MODEL || "qwen/qwen3.8-27b:free",
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ? "已設定" : "沒有",
     HF_TOKEN: process.env.HF_TOKEN ? "已設定" : "❌ 沒有（embedQuery 會直接丟錯）",
     DB_HOST: process.env.DB_HOST ? "已設定" : "❌ 沒有",
@@ -83,16 +84,16 @@ export async function GET(req: Request) {
 
   // 直接把明顯的設定錯誤講出來，不要讓人自己對著 env 猜
   const diagnosis: string[] = [];
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+  if (!process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) {
     diagnosis.push(
-      "❌ 沒有任何 LLM 金鑰（ANTHROPIC_API_KEY / OPENAI_API_KEY）→ " +
-      "會降級成關鍵字規則，回覆是零延遲的罐頭句、也不會有推薦卡片。這是最優先要修的。"
+      "❌ 沒有任何 LLM 金鑰（OPENROUTER_API_KEY / OPENAI_API_KEY）→ " +
+      "會降級成本地風格匹配；卡片仍可用，但分類與文字建議會比較弱。"
     );
   }
-  if ((process.env.CHAT_PROVIDER || "").toLowerCase() === "openrouter") {
+  if ((process.env.CHAT_PROVIDER || "").toLowerCase() === "anthropic") {
     diagnosis.push(
-      "⚠️ CHAT_PROVIDER=openrouter 是舊值（Nemotron 已移除），程式會自動改用 anthropic。" +
-      "建議直接把這個環境變數刪掉或改成 anthropic，避免誤導。"
+      "⚠️ CHAT_PROVIDER=anthropic 是舊值，程式會自動改用 openrouter。" +
+      "建議直接改成 openrouter。"
     );
   }
   if (!process.env.HF_TOKEN) {

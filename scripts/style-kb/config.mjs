@@ -59,14 +59,10 @@ export const CRAWL = {
 export const EXTRACT = {
   defaultProvider: process.env.KB_LLM_PROVIDER || "openrouter",
   model: {
-    // bench 實測（同一篇 balletcore 文章，2026-09-20）：
-    //   deepseek-v4-flash   92.1s  4/4 合格  ← 選它，每秒產出是 Ultra 的 3.3 倍
-    //   nemotron-3-ultra   226.4s  3/3 合格
-    //   nemotron-3.5-light 166.7s  2/2 合格
-    // 品質三者都可用（已入庫的 23 套描述平均 101 字），差別主要在速度。
-    openrouter: process.env.KB_EXTRACT_MODEL || "deepseek/deepseek-v4-flash-0731:free",
+    // 先嘗試 Qwen3.8 27B 免費多模態 endpoint；extract.mjs 會在同一個
+    // request 後面加 openrouter/free，供 endpoint 下架或 rate limit 時 fallback。
+    openrouter: process.env.KB_EXTRACT_MODEL || process.env.OPENROUTER_MODEL || "qwen/qwen3.8-27b:free",
     openai: process.env.KB_EXTRACT_MODEL || "gpt-4o-mini",
-    anthropic: process.env.KB_EXTRACT_MODEL || "claude-haiku-4-5",
   },
   maxTokens: 8000,
   // ⚠️ 這個值太小是災難：請求被 abort 之後會重打，但配額照算、時間白等。
@@ -76,7 +72,7 @@ export const EXTRACT = {
   // bench.mjs 要比較的候選模型（都支援 tool calling、都是 OpenRouter 免費層）。
   // Nemotron Ultra 是 550B reasoning model，慢是它的天性；這裡放幾個小很多的對照組。
   benchModels: [
-    "deepseek/deepseek-v4-flash-0731:free",     // 現行預設
+    "qwen/qwen3.8-27b:free",                    // 現行預設：快速、多模態、支援 structured output
     "nvidia/nemotron-3.5-lightning:free",
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-26b-a4b-it:free",           // 實測常被 provider 429

@@ -60,7 +60,7 @@ def build_product_item(
 ) -> dict:
     """
     Build final fashion item from Product DB data
-    and Claude analysis result.
+    and vision-model analysis result.
     """
 
     category = analysis.get("category")

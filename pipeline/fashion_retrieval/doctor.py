@@ -49,7 +49,7 @@ def check_env_vars() -> bool:
 
     required = {
         "APIFY_TOKEN": "Instagram 抓取",
-        "ANTHROPIC_API_KEY": "Claude（篩圖 + 辨識服裝）",
+        "OPENROUTER_API_KEY": "OpenRouter（篩圖 + 辨識服裝）",
         "HF_TOKEN": "BGE-M3 語意向量",
         "DB_HOST": "RDS",
         "DB_NAME": "RDS",
@@ -105,7 +105,6 @@ def check_packages() -> bool:
     print("\n── Python 套件 ──────────────────────────────────")
 
     packages = {
-        "anthropic": "anthropic",
         "apify_client": "apify-client",
         "huggingface_hub": "huggingface-hub",
         "psycopg2": "psycopg2-binary",

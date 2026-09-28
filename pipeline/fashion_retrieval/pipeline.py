@@ -15,11 +15,11 @@ Purpose
           │
           ▼
       Image Filter         image_filter.filter_post / filter_reel
-     (Claude + dHash)
+     (OpenRouter Vision + dHash)
           │
           ▼
     Fashion Analyzer       fashion_analyzer.analyze_post / analyze_reel
-        (Claude)
+        (OpenRouter Vision)
           │
           ▼
    Garment Description
@@ -430,7 +430,7 @@ def run_instagram_url(
         }
 
     # --------------------------------------------------------
-    # 4. Analyze（Claude Vision）
+    # 4. Analyze（OpenRouter Vision）
     # --------------------------------------------------------
 
     stage("analyze")

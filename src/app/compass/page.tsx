@@ -29,7 +29,7 @@ export default async function CompassPage() {
             style <em>風向標</em>
           </h1>
           <p className="page-note">
-            這些是 Claude 讀你收藏的每件單品長出來的。點一下改名字、點兩下換分類、右邊的 × 刪掉。
+            這些是 AI 讀你收藏的每件單品長出來的。點一下改名字、點兩下換分類、右邊的 × 刪掉。
           </p>
           <div className="page-head__meta compass__legend">
             <span>

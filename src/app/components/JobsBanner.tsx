@@ -7,10 +7,10 @@ import { stageLabel, type IngestJob } from "@/lib/jobTypes";
 /**
  * 分析進度條。
  *
- * pipeline 是非同步的：連結送出去之後 Apify → Claude Vision → BGE-M3
+ * pipeline 是非同步的：連結送出去之後 Apify → OpenRouter Vision → BGE-M3
  * 要跑幾十秒到幾分鐘。這個元件每兩秒問一次 /api/jobs，
  * 有 job 從「跑完」變成 done 就 router.refresh() 把新卡片拉進來，
- * 同時打一次 /api/tags/sync —— 新單品的 text_description 丟給 Claude
+ * 同時打一次 /api/tags/sync —— 新單品的 text_description 丟給 OpenRouter
  * 標成三個標籤，這樣 style 風向標上馬上看得到這次收藏的風格。
  */
 export default function JobsBanner({
@@ -20,7 +20,7 @@ export default function JobsBanner({
 }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<IngestJob[]>(initialJobs);
-  // 一輪只補標一次；不擋著的話 poll 每兩秒就會多打一次 Claude
+  // 一輪只補標一次；不擋著的話 poll 每兩秒就會多打一次 OpenRouter
   const tagging = useRef(false);
 
   const active = jobs.filter(
@@ -49,7 +49,7 @@ export default function JobsBanner({
 
         setJobs(data.jobs);
 
-        // 全部跑完了 → 先讓 Claude 把新單品標好，再把新卡片撈上來
+        // 全部跑完了 → 先讓 OpenRouter 把新單品標好，再把新卡片撈上來
         if (stillActive === 0) {
           if (!tagging.current) {
             tagging.current = true;

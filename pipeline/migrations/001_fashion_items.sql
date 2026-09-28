@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS fashion_items (
     category TEXT NOT NULL
         CHECK (category IN ('top', 'pants')),
 
-    -- Claude-generated semantic description
+    -- vision-model-generated semantic description
     text_description TEXT NOT NULL,
 
     -- BGE-M3 semantic embedding

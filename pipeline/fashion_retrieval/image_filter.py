@@ -40,7 +40,7 @@ import numpy as np
 
 from PIL import Image
 from dotenv import load_dotenv
-from anthropic import Anthropic
+from .openrouter_client import chat_completion, configured_model, image_content
 
 
 # ============================================================
@@ -49,33 +49,19 @@ from anthropic import Anthropic
 
 load_dotenv()
 
-ANTHROPIC_API_KEY = os.getenv(
-    "ANTHROPIC_API_KEY"
-)
-
-if not ANTHROPIC_API_KEY:
-    raise RuntimeError(
-        "ANTHROPIC_API_KEY is not set in .env"
-    )
-
-
-client = Anthropic(
-    api_key=ANTHROPIC_API_KEY
-)
-
-MODEL = "claude-sonnet-4-6"
+MODEL = configured_model()
 
 
 # ============================================================
 # Image utilities
 # ============================================================
 
-def prepare_claude_image(
+def prepare_image(
     image_path: str,
 ) -> tuple[str, str]:
     """
     Convert a local image into the Base64 format
-    required by the Anthropic API.
+    required by the OpenRouter API.
 
     Returns:
         (
@@ -96,7 +82,7 @@ def prepare_claude_image(
     if mime_type is None:
         mime_type = "image/jpeg"
 
-    # Claude supports common image MIME types.
+    # OpenRouter vision models support these common image MIME types.
     supported_types = {
         "image/jpeg",
         "image/png",
@@ -126,7 +112,7 @@ def parse_json_response(
     text: str,
 ) -> dict:
     """
-    Parse JSON returned by Claude.
+    Parse JSON returned by the vision model.
 
     Also handles responses wrapped in:
 
@@ -137,7 +123,7 @@ def parse_json_response(
 
     if not text:
         raise ValueError(
-            "Claude returned an empty response."
+            "Vision model returned an empty response."
         )
 
     text = text.strip()
@@ -159,7 +145,7 @@ def parse_json_response(
 
     if not isinstance(result, dict):
         raise ValueError(
-            "Claude response must be a JSON object."
+            "Vision model response must be a JSON object."
         )
 
     return result
@@ -298,7 +284,7 @@ def filter_items(
 
     Used by both Instagram Posts and Reels.
 
-    All images in the input are sent to Claude in
+    All images in the input are sent to the vision model in
     a single multimodal request.
     """
 
@@ -311,7 +297,7 @@ def filter_items(
     )
 
     # ========================================================
-    # Build Claude multimodal content
+    # Build OpenRouter multimodal content
     # ========================================================
 
     content = [
@@ -326,12 +312,12 @@ def filter_items(
         image_path = item["image_path"]
 
         media_type, image_base64 = (
-            prepare_claude_image(
+            prepare_image(
                 image_path
             )
         )
 
-        # Tell Claude which index belongs
+        # Tell the vision model which index belongs
         # to the following image.
         content.append(
             {
@@ -343,23 +329,13 @@ def filter_items(
             }
         )
 
-        content.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": image_base64,
-                },
-            }
-        )
+        content.append(image_content(media_type, image_base64))
 
     # ========================================================
-    # Call Claude
+    # Call OpenRouter (Qwen3.8 27B free preferred; free multimodal fallback)
     # ========================================================
 
-    response = client.messages.create(
-        model=MODEL,
+    response_text, actual_model = chat_completion(
         max_tokens=2048,
         messages=[
             {
@@ -368,25 +344,6 @@ def filter_items(
             }
         ],
     )
-
-    # ========================================================
-    # Extract response text
-    # ========================================================
-
-    response_text = ""
-
-    for block in response.content:
-
-        if block.type == "text":
-            response_text += block.text
-
-    response_text = response_text.strip()
-
-    if not response_text:
-        raise ValueError(
-            f"Claude returned empty content. "
-            f"Model: {MODEL}"
-        )
 
     # ========================================================
     # Parse response
@@ -402,7 +359,7 @@ def filter_items(
 
         print(
             "\n[Image Filter] "
-            "Could not parse Claude response."
+            f"Could not parse OpenRouter response ({actual_model})."
         )
 
         print(
@@ -432,7 +389,7 @@ def filter_items(
         list,
     ):
         raise ValueError(
-            "Claude response 'images' "
+            "Vision model response 'images' "
             "must be a list."
         )
 
@@ -480,7 +437,7 @@ def filter_items(
             index
         )
 
-        # Claude should return one decision
+        # The vision model should return one decision
         # for every image.
         if decision is None:
 
@@ -488,7 +445,7 @@ def filter_items(
                 f"[Image Filter] "
                 f"image_{index}: "
                 f"REJECT - No decision returned "
-                f"by Claude."
+                f"by the vision model."
             )
 
             continue
@@ -643,7 +600,7 @@ def deduplicate_reel_frames(
     Remove near-identical consecutive Reel frames.
 
     This stage is completely local.
-    No Claude/API request is used.
+    No LLM/API request is used.
 
     Frames are compared against the previously
     selected representative frame.
@@ -761,7 +718,7 @@ def filter_reel(
     Filter Instagram Reel frames.
 
     Stage 1:
-        Claude determines whether each frame contains
+        The vision model determines whether each frame contains
         useful top / pants information.
 
     Stage 2:
@@ -777,7 +734,7 @@ def filter_reel(
     )
 
     # ========================================================
-    # Stage 1: Semantic filtering with Claude
+    # Stage 1: Semantic filtering with OpenRouter
     # ========================================================
 
     useful_items = filter_items(
