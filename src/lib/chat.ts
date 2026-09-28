@@ -957,9 +957,12 @@ async function buildAdviceContext(
   rawText: string
 ): Promise<AdviceContext | null> {
   const picked = pickBestSuggestion(scored, searchResult.suggestions);
-  if (!picked) return null;
-
-  const outfit = scored[picked.outfitIdx];
+  // 有些部署只帶推薦 lookup，沒有完整的 style_suggestions。以前這會讓卡片
+  // 正常出現，卻完全不建立 advice context。現在至少用排名第一套與商品描述
+  // 產生建議；有 KB 建議時仍優先選最吻合的那套。
+  const outfitIdx = picked?.outfitIdx ?? 0;
+  const outfit = scored[outfitIdx];
+  if (!outfit) return null;
   const ids = [outfit.top?.productId, outfit.bottom?.productId]
     .filter((x): x is number => typeof x === "number");
   const descriptions = await loadProductDescriptions(ids);
@@ -968,17 +971,17 @@ async function buildAdviceContext(
     p ? { title: p.title, description: descriptions.get(p.productId) ?? null } : null;
 
   return {
-    outfitIndex: picked.outfitIdx + 1,
+    outfitIndex: outfitIdx + 1,
     styleZh: searchResult.style?.styleZh ?? searchResult.style?.style ?? "這個風格",
-    sourceTitle: picked.suggestion.sourceTitle,
-    dos: picked.suggestion.dos,
-    embedText: picked.suggestion.embedText,
-    suggestedTop: picked.suggestion.topDescription,
-    suggestedBottom: picked.suggestion.bottomDescription,
+    sourceTitle: picked?.suggestion.sourceTitle ?? null,
+    dos: picked?.suggestion.dos ?? [],
+    embedText: picked?.suggestion.embedText ?? null,
+    suggestedTop: picked?.suggestion.topDescription ?? null,
+    suggestedBottom: picked?.suggestion.bottomDescription ?? null,
     pickedTop: pick(outfit.top),
     pickedBottom: pick(outfit.bottom),
     userQuery: summariseQuery(classifiedResult, rawText),
-    matchScore: picked.score,
+    matchScore: picked?.score ?? 0,
   };
 }
 
@@ -1011,6 +1014,36 @@ function buildAdviceMessage(ctx: AdviceContext): string {
   ].filter(Boolean).join("\n\n");
 }
 
+function compactAdvicePart(value: string | null | undefined, maxLength: number): string {
+  return (value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/[。；，、,.!?！？]+$/g, "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+/** OpenRouter 暫時 timeout / rate limit 時的保底，避免推薦卡片後面整段消失。 */
+function fallbackOutfitAdvice(ctx: AdviceContext): string {
+  const need = compactAdvicePart(ctx.userQuery.split("\n")[0], 48);
+  const itemNames = [ctx.pickedTop?.title, ctx.pickedBottom?.title]
+    .map((x) => compactAdvicePart(x, 34))
+    .filter(Boolean);
+  const tip = compactAdvicePart(
+    ctx.dos[0] ?? ctx.embedText ?? ctx.suggestedTop ?? ctx.suggestedBottom,
+    72
+  );
+
+  const opening = need
+    ? `這套以${ctx.styleZh}為主軸，呼應你「${need}」的需求。`
+    : `這套以${ctx.styleZh}為主軸，整體方向會比較一致。`;
+  const pieces = itemNames.length
+    ? `挑選的${itemNames.join("搭配")}可以直接組成完整造型。`
+    : "上下身維持同一個風格方向，會讓造型更完整。";
+  const technique = tip ? `搭配時可以掌握「${tip}」這個重點。` : "搭配時把視覺重點留在一處，避免元素彼此搶戲。";
+
+  return `${opening}${pieces}${technique}最後整理好上下身比例，再用一件簡潔的配件收尾，整體會更俐落。`;
+}
+
 /**
  * 寫那段穿搭建議。
  *
@@ -1025,13 +1058,13 @@ export async function writeOutfitAdvice(
     provider ?? resolveProvider(),
     ADVICE_SYSTEM_PROMPT,
     buildAdviceMessage(ctx),
-    500,
+    800,
     0.6, // 建議要讀起來像人話，不要像分類器
   );
 
   if (!content) {
-    console.warn(`[chat] 穿搭建議產生失敗（${reason}）`);
-    return null;
+    console.warn(`[chat] 穿搭建議產生失敗（${reason}），改用本機保底建議`);
+    return fallbackOutfitAdvice(ctx);
   }
   console.log(`[chat] 穿搭建議完成，對應第 ${ctx.outfitIndex} 套（吻合度 ${ctx.matchScore.toFixed(3)}）`);
   return content.trim();

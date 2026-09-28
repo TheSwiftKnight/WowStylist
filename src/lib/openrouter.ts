@@ -43,6 +43,12 @@ export async function callOpenRouter(options: {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /**
+   * App 內的工作都是分類、JSON 或短文，不需要讓 reasoning model 長考。
+   * Qwen3.8 預設會開 reasoning；若不關掉，它可能先耗完 max_tokens，
+   * 最後只留下 finish_reason=length 而沒有可用的答案。
+   */
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "max";
 }): Promise<OpenRouterResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -77,6 +83,7 @@ export async function callOpenRouter(options: {
         messages: options.messages,
         max_tokens: options.maxTokens ?? 400,
         temperature: options.temperature ?? 0,
+        reasoning: { effort: options.reasoningEffort ?? "none" },
       }),
     });
 

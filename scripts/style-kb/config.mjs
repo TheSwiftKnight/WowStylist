@@ -77,8 +77,9 @@ export const EXTRACT = {
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-26b-a4b-it:free",           // 實測常被 provider 429
   ],
-  // 填欄位不需要長考。"low" 省配額也大幅降延遲；設成 "" 就不帶這個參數。
-  reasoningEffort: process.env.KB_REASONING_EFFORT ?? "low",
+  // 填欄位不需要長考。Qwen3.8 預設會開 reasoning，這裡明確關掉以免
+  // reasoning 先吃完 max_tokens；設成 "" 可完全不帶這個參數。
+  reasoningEffort: process.env.KB_REASONING_EFFORT ?? "none",
   // 送進 LLM 的內文上限。這是延遲的主要來源之一，砍短比什麼都有效。
   maxArticleChars: Number(process.env.KB_ARTICLE_CHARS || 9000),
 };

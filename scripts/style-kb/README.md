@@ -196,7 +196,7 @@ matters more than anything else**. The current design:
 | Don't fetch the page | `CRAWL.preferSearchText` | Saves one HTTP round trip per article (Exa already carries the text) |
 | Parallel across styles | `--concurrency` | Default 3; within a style it stays sequential so the early exit stays accurate |
 | Truncate the article | `EXTRACT.maxArticleChars` | Default 9000 chars; input tokens directly drive latency |
-| Lower reasoning | `EXTRACT.reasoningEffort` | Default `low`; filling in fields doesn't need deep thought |
+| Lower reasoning | `EXTRACT.reasoningEffort` | Default `none`; filling in fields doesn't need deep thought |
 | Disk cache | `data/style-kb/cache/` | Only used with `--refetch` |
 | A long enough timeout | `EXTRACT.timeoutMs` | **The easiest trap — see below** |
 

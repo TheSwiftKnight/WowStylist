@@ -86,6 +86,10 @@ def chat_completion(
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            # Qwen3.8 enables reasoning by default. These calls only need short
+            # structured/vision output, so reasoning would waste output tokens
+            # and can leave no final answer before max_tokens is reached.
+            "reasoning": {"effort": "none"},
         },
         timeout=timeout,
     )
