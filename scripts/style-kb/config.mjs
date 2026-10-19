@@ -59,9 +59,9 @@ export const CRAWL = {
 export const EXTRACT = {
   defaultProvider: process.env.KB_LLM_PROVIDER || "openrouter",
   model: {
-    // 先嘗試 Qwen3.8 27B 免費多模態 endpoint；extract.mjs 會在同一個
+    // 先嘗試 Nemotron 3.5 Super VL 免費多模態 endpoint；extract.mjs 會在同一個
     // request 後面加 openrouter/free，供 endpoint 下架或 rate limit 時 fallback。
-    openrouter: process.env.KB_EXTRACT_MODEL || process.env.OPENROUTER_MODEL || "qwen/qwen3.8-27b:free",
+    openrouter: process.env.KB_EXTRACT_MODEL || process.env.OPENROUTER_MODEL || "nvidia/nemotron-3.5-super-vl:free",
     openai: process.env.KB_EXTRACT_MODEL || "gpt-4o-mini",
   },
   maxTokens: 8000,
@@ -72,14 +72,14 @@ export const EXTRACT = {
   // bench.mjs 要比較的候選模型（都支援 tool calling、都是 OpenRouter 免費層）。
   // Nemotron Ultra 是 550B reasoning model，慢是它的天性；這裡放幾個小很多的對照組。
   benchModels: [
-    "qwen/qwen3.8-27b:free",                    // 現行預設：快速、多模態、支援 structured output
+    "nvidia/nemotron-3.5-super-vl:free",       // 現行預設：多模態、支援 structured output
     "nvidia/nemotron-3.5-lightning:free",
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-26b-a4b-it:free",           // 實測常被 provider 429
   ],
-  // 填欄位不需要長考。Qwen3.8 預設會開 reasoning，這裡明確關掉以免
-  // reasoning 先吃完 max_tokens；設成 "" 可完全不帶這個參數。
-  reasoningEffort: process.env.KB_REASONING_EFFORT ?? "none",
+  // Nemotron 3.5 Super VL 要求 reasoning 必須開啟；minimal 避免長考吃完
+  // max_tokens。設成 "" 可完全不帶這個參數。
+  reasoningEffort: process.env.KB_REASONING_EFFORT ?? "minimal",
   // 送進 LLM 的內文上限。這是延遲的主要來源之一，砍短比什麼都有效。
   maxArticleChars: Number(process.env.KB_ARTICLE_CHARS || 9000),
 };

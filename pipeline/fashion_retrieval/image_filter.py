@@ -332,7 +332,7 @@ def filter_items(
         content.append(image_content(media_type, image_base64))
 
     # ========================================================
-    # Call OpenRouter (Qwen3.8 27B free preferred; free multimodal fallback)
+    # Call OpenRouter (Nemotron 3.5 Super VL preferred; free multimodal fallback)
     # ========================================================
 
     response_text, actual_model = chat_completion(

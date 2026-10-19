@@ -31,7 +31,7 @@ import {
 // webhook 收到「不是 IG 連結」的文字時會呼叫 generateChatReply()，
 // 由 CHAT_PROVIDER 環境變數決定用哪個引擎：
 //   - "openrouter" : OpenRouter API（需 OPENROUTER_API_KEY）★ 預設
-//                    預設 Qwen3.8 27B 免費多模態模型，不可用時 fallback 到 openrouter/free。
+//                    預設 Nemotron 3.5 Super VL 免費多模態模型，不可用時 fallback 到 openrouter/free。
 //   - "openai"     : OpenAI API（需 OPENAI_API_KEY）
 //   - "rules"      : 純關鍵字規則（不用金鑰，保底 fallback）
 //
@@ -153,7 +153,7 @@ function isGreetingOrHowTo(text: string): boolean {
  * 而且把 aliases / occasions / seasons 都列出來，因為使用者打進來的
  * 常常不是風格名，而是場合（「婚禮賓客」）或季節（「秋天通勤」）。
  *
- * 約 7000 字元／3.5k tokens，Qwen3.8 27B 吃得下；模組層算一次就快取住。
+ * 約 7000 字元／3.5k tokens，預設模型吃得下；模組層算一次就快取住。
  */
 function buildStyleDatabaseSection(): string {
   const profiles = listStyleProfiles();

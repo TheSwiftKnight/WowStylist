@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "qwen/qwen3.8-27b:free"
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 FREE_FALLBACK_MODEL = "openrouter/free"
 
 
@@ -58,7 +58,7 @@ def chat_completion(
     """
     Call OpenRouter and return ``(text, actual_model)``.
 
-    Qwen3.8 27B's free multimodal endpoint is preferred. Because free endpoints can
+    Nemotron 3.5 Super VL's free multimodal endpoint is preferred. Because free endpoints can
     become rate-limited, ``openrouter/free`` is included as an automatic fallback.
     The free router also selects an image-capable model when ``messages`` contains
     image blocks.
@@ -86,10 +86,9 @@ def chat_completion(
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            # Qwen3.8 enables reasoning by default. These calls only need short
-            # structured/vision output, so reasoning would waste output tokens
-            # and can leave no final answer before max_tokens is reached.
-            "reasoning": {"effort": "none"},
+            # Nemotron 3.5 Super VL requires reasoning to stay enabled. Minimal
+            # keeps structured/vision calls short without triggering HTTP 400.
+            "reasoning": {"effort": "minimal"},
         },
         timeout=timeout,
     )

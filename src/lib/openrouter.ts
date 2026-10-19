@@ -1,7 +1,7 @@
 // OpenRouter 共用 client。專案內所有文字 LLM 都從這裡走，避免
 // chat / styleTagger 各自實作一份、之後又出現 provider 不一致。
 
-export const DEFAULT_OPENROUTER_MODEL = "qwen/qwen3.8-27b:free";
+export const DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3.5-super-vl:free";
 export const OPENROUTER_FREE_FALLBACK_MODEL = "openrouter/free";
 
 export type OpenRouterMessage = {
@@ -45,8 +45,8 @@ export async function callOpenRouter(options: {
   timeoutMs?: number;
   /**
    * App 內的工作都是分類、JSON 或短文，不需要讓 reasoning model 長考。
-   * Qwen3.8 預設會開 reasoning；若不關掉，它可能先耗完 max_tokens，
-   * 最後只留下 finish_reason=length 而沒有可用的答案。
+   * 部分模型要求 reasoning 必須開啟。預設用 minimal，避免長考吃完
+   * max_tokens，同時相容 Nemotron 3.5 Super VL。
    */
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "max";
 }): Promise<OpenRouterResult> {
@@ -83,7 +83,7 @@ export async function callOpenRouter(options: {
         messages: options.messages,
         max_tokens: options.maxTokens ?? 400,
         temperature: options.temperature ?? 0,
-        reasoning: { effort: options.reasoningEffort ?? "none" },
+        reasoning: { effort: options.reasoningEffort ?? "minimal" },
       }),
     });
 

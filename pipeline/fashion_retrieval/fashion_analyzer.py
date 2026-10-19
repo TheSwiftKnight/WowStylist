@@ -531,7 +531,7 @@ def analyze_image(
     )
 
     # ========================================================
-    # Call OpenRouter (Qwen3.8 27B free preferred; free multimodal fallback)
+    # Call OpenRouter (Nemotron 3.5 Super VL preferred; free multimodal fallback)
     # ========================================================
 
     raw_response, actual_model = chat_completion(

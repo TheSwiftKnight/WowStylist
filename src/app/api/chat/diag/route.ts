@@ -63,7 +63,7 @@ export async function GET(req: Request) {
     CHAT_MODEL: process.env.CHAT_MODEL || "(預設)",
     CHAT_DEBUG: process.env.CHAT_DEBUG || "(未設)",
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? "已設定" : "❌ 沒有",
-    OPENROUTER_MODEL: process.env.OPENROUTER_MODEL || "qwen/qwen3.8-27b:free",
+    OPENROUTER_MODEL: process.env.OPENROUTER_MODEL || "nvidia/nemotron-3.5-super-vl:free",
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ? "已設定" : "沒有",
     HF_TOKEN: process.env.HF_TOKEN ? "已設定" : "❌ 沒有（embedQuery 會直接丟錯）",
     DB_HOST: process.env.DB_HOST ? "已設定" : "❌ 沒有",

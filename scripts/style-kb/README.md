@@ -37,7 +37,7 @@ npm i cheerio json5
 # extraction layer — this is the default
 OPENROUTER_API_KEY=sk-or-v1-...
 KB_LLM_PROVIDER=openrouter                # default, can be omitted
-KB_EXTRACT_MODEL=                         # empty = OPENROUTER_MODEL or qwen/qwen3.8-27b:free
+KB_EXTRACT_MODEL=                         # empty = OPENROUTER_MODEL or nvidia/nemotron-3.5-super-vl:free
 
 # search layer (pick one; Exa recommended — search + text in one call)
 EXA_API_KEY=...        # $7/1k calls, $20 on signup + $10/month
@@ -251,7 +251,7 @@ KB_EXTRACT_MODEL=openai/gpt-oss-120b node scripts/style-kb/crawl.mjs
 ```
 
 ⚠️ OpenRouter free-model availability and rate limits change over time. The code tries
-the preferred Qwen3.8 27B free endpoint first and falls back to `openrouter/free`; check
+the preferred Nemotron 3.5 Super VL free endpoint first and falls back to `openrouter/free`; check
 the OpenRouter dashboard before a large crawl.
 
 ## 7. Troubleshooting

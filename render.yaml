@@ -25,7 +25,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: qwen/qwen3.8-27b:free
+        value: nvidia/nemotron-3.5-super-vl:free
       - key: OPENROUTER_TIMEOUT_SECONDS
         value: "60"
       # 沒填的話 fashion_encoder.py 在 import 時就 raise，服務起不來

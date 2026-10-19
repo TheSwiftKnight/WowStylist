@@ -489,10 +489,8 @@ export function dot(a: number[], b: number[]): number {
   return sum;
 }
 
-const HF_ENDPOINTS = [
-  `https://router.huggingface.co/hf-inference/models/${EMBEDDING_MODEL}/pipeline/feature-extraction`,
-  `https://api-inference.huggingface.co/models/${EMBEDDING_MODEL}`,
-];
+const HF_ENDPOINT =
+  `https://router.huggingface.co/hf-inference/models/${EMBEDDING_MODEL}/pipeline/feature-extraction`;
 
 /** 把一句話編成 BGE-M3 向量（已 L2 normalize）。 */
 export async function embedQuery(text: string): Promise<number[]> {
@@ -504,48 +502,37 @@ export async function embedQuery(text: string): Promise<number[]> {
   const trimmed = text.trim();
   if (!trimmed) throw new Error("query 文字是空的");
 
-  let lastError: unknown = null;
+  try {
+    const res = await fetch(HF_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ inputs: trimmed }),
+      signal: AbortSignal.timeout(20_000),
+    });
 
-  // HF 換過網域，兩個都試一次
-  for (const endpoint of HF_ENDPOINTS) {
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ inputs: trimmed }),
-        signal: AbortSignal.timeout(20_000),
-      });
-
-      if (!res.ok) {
-        lastError = new Error(
-          `HF ${res.status}: ${(await res.text()).slice(0, 200)}`
-        );
-        continue;
-      }
-
-      const data = (await res.json()) as unknown;
-
-      // 可能是 number[] 或 [number[]]
-      let vector: unknown = data;
-      while (Array.isArray(vector) && Array.isArray(vector[0])) {
-        vector = vector[0];
-      }
-
-      if (!Array.isArray(vector) || typeof vector[0] !== "number") {
-        lastError = new Error("HF 回傳的格式看不懂");
-        continue;
-      }
-
-      return l2normalize((vector as number[]).map(Number));
-    } catch (err) {
-      lastError = err;
+    if (!res.ok) {
+      throw new Error(`HF ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
-  }
 
-  throw new Error(`query embedding 失敗：${String(lastError)}`);
+    const data = (await res.json()) as unknown;
+
+    // 可能是 number[] 或 [number[]]
+    let vector: unknown = data;
+    while (Array.isArray(vector) && Array.isArray(vector[0])) {
+      vector = vector[0];
+    }
+
+    if (!Array.isArray(vector) || typeof vector[0] !== "number") {
+      throw new Error("HF 回傳的格式看不懂");
+    }
+
+    return l2normalize((vector as number[]).map(Number));
+  } catch (err) {
+    throw new Error(`query embedding 失敗：${String(err)}`);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

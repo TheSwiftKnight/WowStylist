@@ -207,7 +207,7 @@ def health() -> dict:
             "provider": "openrouter",
             "model": os.getenv(
                 "OPENROUTER_VISION_MODEL",
-                os.getenv("OPENROUTER_MODEL", "qwen/qwen3.8-27b:free"),
+                os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-super-vl:free"),
             ),
             "fallback": "openrouter/free",
         },
