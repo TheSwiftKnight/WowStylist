@@ -15,7 +15,7 @@
 
 import { fashionTable, query } from "@/lib/rds";
 import { styleQuery } from "@/lib/styleDb";
-import { callOpenRouter, DEFAULT_OPENROUTER_MODEL } from "@/lib/openrouter";
+import { callTagLlm } from "@/lib/tagLlm";
 
 /** 一次送進 LLM 的單品數。太大容易漏行，太小浪費 round trip。 */
 const BATCH_SIZE = 12;
@@ -65,11 +65,6 @@ type Pending = {
   description: string;
 };
 
-function model(): string {
-  return process.env.TAG_MODEL || process.env.OPENROUTER_MODEL ||
-    process.env.CHAT_MODEL || DEFAULT_OPENROUTER_MODEL;
-}
-
 /** 只留 5 個字以內的乾淨標籤；空字串代表這格失敗。 */
 function clean(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -98,13 +93,7 @@ function parseJsonArray(text: string): unknown[] {
 export async function generateStyleTags(
   items: { category: string; description: string }[]
 ): Promise<Map<number, StyleTagTriple>> {
-  const out = new Map<number, StyleTagTriple>();
-  if (items.length === 0) return out;
-
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.error("[styleTagger] 沒設 OPENROUTER_API_KEY，標不了");
-    return out;
-  }
+  if (items.length === 0) return new Map<number, StyleTagTriple>();
 
   const listing = items
     .map(
@@ -113,24 +102,17 @@ export async function generateStyleTags(
     )
     .join("\n");
 
-  try {
-    const result = await callOpenRouter({
-      model: model(),
-      maxTokens: 100 * items.length + 200,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: listing },
-      ],
-    });
-
-    if (!result.content) {
-      console.error(`[styleTagger] OpenRouter API 失敗: ${result.reason}`);
-      return out;
-    }
-
-    const text = result.content;
-
-    for (const row of parseJsonArray(text)) {
+  const result = await callTagLlm({
+    maxTokens: 100 * items.length + 200,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: listing },
+    ],
+    parse: (text) => {
+      const rows = parseJsonArray(text);
+      if (rows.length === 0) return null;
+      const out = new Map<number, StyleTagTriple>();
+      for (const row of rows) {
       const r = row as Record<string, unknown>;
       const i = Number(r.i);
       if (!Number.isInteger(i) || i < 0 || i >= items.length) continue;
@@ -144,12 +126,20 @@ export async function generateStyleTags(
       // 三格都要有東西，缺一格就整件跳過 —— 空字串會在標籤雲上變成幽靈標籤
       if (!triple.style || !triple.palette || !triple.adjective) continue;
       out.set(i, triple);
-    }
-  } catch (e) {
-    console.error("[styleTagger] OpenRouter API 錯誤:", e);
+      }
+      return out.size > 0 ? out : null;
+    },
+  });
+
+  if (!result.value) {
+    console.error(`[styleTagger] OpenRouter 與 OpenAI 都失敗: ${result.reason}`);
+    return new Map<number, StyleTagTriple>();
   }
 
-  return out;
+  console.log(
+    `[styleTagger] provider=${result.provider} model=${result.model ?? "unknown"}`
+  );
+  return result.value;
 }
 
 /** RDS 上有、但 garment_style_tags 還沒標過的單品。 */
@@ -224,7 +214,7 @@ export async function tagUntaggedGarments(
   const pending = await listUntagged(limit);
   if (pending.length === 0) return { tagged: 0, pending: 0, failed: 0 };
 
-  console.log(`[styleTagger] ${pending.length} 件還沒標，開始打 OpenRouter`);
+  console.log(`[styleTagger] ${pending.length} 件還沒標，開始產生標籤`);
 
   let tagged = 0;
 

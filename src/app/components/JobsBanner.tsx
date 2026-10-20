@@ -7,10 +7,10 @@ import { stageLabel, type IngestJob } from "@/lib/jobTypes";
 /**
  * 分析進度條。
  *
- * pipeline 是非同步的：連結送出去之後 Apify → OpenRouter Vision → BGE-M3
+ * pipeline 是非同步的：連結送出去之後 Apify → Vision → BGE-M3
  * 要跑幾十秒到幾分鐘。這個元件每兩秒問一次 /api/jobs，
  * 有 job 從「跑完」變成 done 就 router.refresh() 把新卡片拉進來，
- * 同時打一次 /api/tags/sync —— 新單品的 text_description 丟給 OpenRouter
+ * 同時打一次 /api/tags/sync —— 新單品的 text_description 交給標籤模型
  * 標成三個標籤，這樣 style 風向標上馬上看得到這次收藏的風格。
  */
 export default function JobsBanner({
@@ -20,7 +20,7 @@ export default function JobsBanner({
 }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<IngestJob[]>(initialJobs);
-  // 一輪只補標一次；不擋著的話 poll 每兩秒就會多打一次 OpenRouter
+  // 一輪只補標一次；不擋著的話 poll 每兩秒就會多打一輪標籤 API
   const tagging = useRef(false);
 
   const active = jobs.filter(
@@ -49,7 +49,7 @@ export default function JobsBanner({
 
         setJobs(data.jobs);
 
-        // 全部跑完了 → 先讓 OpenRouter 把新單品標好，再把新卡片撈上來
+        // 全部跑完了 → 先把新單品標好，再把新卡片撈上來
         if (stillActive === 0) {
           if (!tagging.current) {
             tagging.current = true;
@@ -72,26 +72,31 @@ export default function JobsBanner({
     };
   }, [active.length, router]);
 
-  const failed = jobs.filter((job) => job.status === "failed").slice(0, 3);
+  // API 已按 created_at DESC 排好；成功、失敗、進行中都保留，只畫最近三筆。
+  const recent = jobs.slice(0, 3);
 
-  if (active.length === 0 && failed.length === 0) return null;
+  if (recent.length === 0) return null;
 
   return (
     <div className="jobs-banner">
-      {active.map((job) => (
-        <div className="jobs-row" key={job.id}>
-          <span className="jobs-dot" aria-hidden="true" />
+      {recent.map((job) => (
+        <div
+          className={`jobs-row jobs-row--${job.status}`}
+          key={job.id}
+        >
+          <span
+            className={`jobs-dot jobs-dot--${job.status}`}
+            aria-hidden="true"
+          />
           <span className="jobs-code">{job.shortcode ?? "解析中"}</span>
-          <span className="jobs-stage">{stageLabel(job.stage)}…</span>
-        </div>
-      ))}
-
-      {failed.map((job) => (
-        <div className="jobs-row jobs-row--failed" key={job.id}>
-          <span className="jobs-dot jobs-dot--failed" aria-hidden="true" />
-          <span className="jobs-code">{job.shortcode ?? "—"}</span>
           <span className="jobs-stage">
-            分析失敗{job.error ? `：${job.error.slice(0, 80)}` : ""}
+            {job.status === "done"
+              ? job.itemCount > 0
+                ? `已成功寫入 ${job.itemCount} 件單品`
+                : `已完成${job.error ? `：${job.error.slice(0, 80)}` : ""}`
+              : job.status === "failed"
+                ? `分析失敗${job.error ? `：${job.error.slice(0, 80)}` : ""}`
+                : `${stageLabel(job.stage)}…`}
           </span>
         </div>
       ))}

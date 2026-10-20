@@ -31,10 +31,12 @@ function contentToText(content: unknown): string {
  * openrouter/free 放在第二順位。這個 router 仍只會選免費模型，並且會
  * 根據 request 是否含圖片自動排除不支援 vision 的模型。
  */
-export function openRouterModels(model?: string): string[] {
+export function openRouterModels(model?: string, includeFreeRouterFallback = true): string[] {
   const primary = model?.trim() || process.env.OPENROUTER_MODEL?.trim() ||
     process.env.CHAT_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
-  return [...new Set([primary, OPENROUTER_FREE_FALLBACK_MODEL])];
+  return includeFreeRouterFallback
+    ? [...new Set([primary, OPENROUTER_FREE_FALLBACK_MODEL])]
+    : [primary];
 }
 
 export async function callOpenRouter(options: {
@@ -43,6 +45,8 @@ export async function callOpenRouter(options: {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /** false = 只測指定模型，失敗交由呼叫端切換 provider。 */
+  includeFreeRouterFallback?: boolean;
   /**
    * App 內的工作都是分類、JSON 或短文，不需要讓 reasoning model 長考。
    * 部分模型要求 reasoning 必須開啟。預設用 minimal，避免長考吃完
@@ -59,7 +63,10 @@ export async function callOpenRouter(options: {
     };
   }
 
-  const models = openRouterModels(options.model);
+  const models = openRouterModels(
+    options.model,
+    options.includeFreeRouterFallback ?? true
+  );
   const controller = new AbortController();
   const timeoutMs = options.timeoutMs ?? Number(process.env.CHAT_TIMEOUT_MS || 8000);
   const timer = setTimeout(() => controller.abort(), timeoutMs);

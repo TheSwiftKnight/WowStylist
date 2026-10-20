@@ -38,13 +38,18 @@ export default function TagCloud({
     });
     const data = (await res.json().catch(() => ({}))) as {
       tag?: StyleTag;
+      tags?: StyleTag[];
       error?: string;
     };
     if (!res.ok || !data.tag) {
       setError(data.error ?? "新增失敗");
       return;
     }
-    setTags((prev) => [...prev, data.tag as StyleTag]);
+    if (data.tags) {
+      setTags(data.tags);
+    } else {
+      setTags((prev) => [...prev, data.tag as StyleTag]);
+    }
     setDraftLabel("");
     setDraftOpen(false);
   }

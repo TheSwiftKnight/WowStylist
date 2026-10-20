@@ -66,6 +66,7 @@ export async function listRecentJobs(limit = 10): Promise<IngestJob[]> {
   try {
     const rows = await query<Row>(
       `SELECT ${SELECT} FROM ingest_jobs
+        WHERE COALESCE(stage, '') <> 'like'
         ORDER BY created_at DESC
         LIMIT $1`,
       [limit]

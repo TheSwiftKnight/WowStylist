@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { createTag, isTagKind, listTags } from "@/lib/tags";
+import { compactStyleTags } from "@/lib/tagCompactor";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/tags — 列出 style 風向標的所有標籤（權重高到低）
 export async function GET() {
@@ -28,7 +30,9 @@ export async function POST(req: Request) {
 
   try {
     const tag = await createTag({ label, kind, weight: body?.weight });
-    return NextResponse.json({ tag }, { status: 201 });
+    const compaction = await compactStyleTags();
+    const { tags } = await listTags();
+    return NextResponse.json({ tag, tags, compaction }, { status: 201 });
   } catch (err) {
     console.error("[tags] 新增失敗：", err);
     return NextResponse.json({ error: "資料庫寫入失敗" }, { status: 503 });

@@ -1056,6 +1056,10 @@ button {
   color: var(--clay);
 }
 
+.jobs-row--done {
+  color: var(--moss);
+}
+
 .jobs-dot {
   width: 7px;
   height: 7px;
@@ -1065,9 +1069,17 @@ button {
   flex: none;
 }
 
+.jobs-dot--failed,
+.jobs-dot--done {
+  animation: none;
+}
+
 .jobs-dot--failed {
   background: var(--clay);
-  animation: none;
+}
+
+.jobs-dot--done {
+  background: var(--moss);
 }
 
 @keyframes jobs-pulse {
