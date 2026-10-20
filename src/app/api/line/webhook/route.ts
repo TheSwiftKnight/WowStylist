@@ -411,6 +411,16 @@ export async function POST(req: Request) {
                 type: "text",
                 text: `💡 第 ${reply.advice.outfitIndex} 套的搭配建議\n\n${advice}`,
               });
+              if (reply.advice.sourceTitle || reply.advice.sourceUrl) {
+                const source = [
+                  `source: ${reply.advice.sourceTitle ?? "未命名來源"}`,
+                  reply.advice.sourceUrl,
+                ].filter(Boolean).join("\n");
+                messages.push({
+                  type: "text",
+                  text: `<dev ref only>\n${source}`,
+                });
+              }
             }
           }
         } else {

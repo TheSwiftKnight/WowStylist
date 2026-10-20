@@ -186,6 +186,7 @@ export async function GET(req: Request) {
             outfitIndex: reply.advice.outfitIndex,
             matchScore: reply.advice.matchScore,
             sourceTitle: reply.advice.sourceTitle,
+            sourceUrl: reply.advice.sourceUrl,
             dos: reply.advice.dos,
           }
         : null,

@@ -952,6 +952,7 @@ export type AdviceContext = {
   styleZh: string;
   /** 來源建議 */
   sourceTitle: string | null;
+  sourceUrl: string | null;
   dos: string[];
   embedText: string | null;
   suggestedTop: string | null;
@@ -1042,6 +1043,7 @@ async function buildAdviceContext(
     outfitIndex: outfitIdx + 1,
     styleZh: searchResult.style?.styleZh ?? searchResult.style?.style ?? "這個風格",
     sourceTitle: picked?.suggestion.sourceTitle ?? null,
+    sourceUrl: picked?.suggestion.sourceUrl ?? null,
     dos: picked?.suggestion.dos ?? [],
     embedText: picked?.suggestion.embedText ?? null,
     suggestedTop: picked?.suggestion.topDescription ?? null,
