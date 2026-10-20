@@ -140,7 +140,7 @@ trial is up.
 Use the same values as your local `.env`:
 
 ```
-APIFY_TOKEN            OPENROUTER_API_KEY      HF_TOKEN
+APIFY_TOKEN            OPENAI_API_KEY          OPENROUTER_API_KEY      HF_TOKEN
 DB_HOST                DB_USER                 DB_PASSWORD
 PRODUCTS_DB_HOST       PRODUCTS_DB_USER        PRODUCTS_DB_PASSWORD
 PIPELINE_TOKEN         ALLOWED_ORIGINS
@@ -323,7 +323,7 @@ stage; set it to 0 to turn that off.
 All of them live in `../.env` (shared with Next.js). The pipeline uses:
 
 ```
-APIFY_TOKEN, OPENROUTER_API_KEY, HF_TOKEN,
+APIFY_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY, HF_TOKEN,
 DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE,
 FASHION_TABLE, PIPELINE_TOKEN, ALLOWED_ORIGINS, GARMENT_DEDUP_THRESHOLD
 ```

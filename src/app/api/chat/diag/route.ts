@@ -65,6 +65,8 @@ export async function GET(req: Request) {
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? "已設定" : "❌ 沒有",
     OPENROUTER_MODEL: process.env.OPENROUTER_MODEL || "nvidia/nemotron-3.5-super-vl:free",
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ? "已設定" : "沒有",
+    ADVICE_PROVIDER: process.env.ADVICE_PROVIDER || (process.env.OPENAI_API_KEY ? "openai（自動）" : "跟對話 provider"),
+    ADVICE_MODEL: process.env.ADVICE_MODEL || "gpt-5.4-mini",
     HF_TOKEN: process.env.HF_TOKEN ? "已設定" : "❌ 沒有（embedQuery 會直接丟錯）",
     DB_HOST: process.env.DB_HOST ? "已設定" : "❌ 沒有",
     PRODUCTS_DB_HOST: process.env.PRODUCTS_DB_HOST ? "已設定" : "沒有（會跟 IG 共用同一台）",

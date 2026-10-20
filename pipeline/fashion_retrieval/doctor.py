@@ -47,9 +47,15 @@ def check_env_file() -> None:
 def check_env_vars() -> bool:
     print("\n── 環境變數 ─────────────────────────────────────")
 
+    vision_provider = os.getenv(
+        "VISION_PROVIDER",
+        "openai" if os.getenv("OPENAI_API_KEY") else "openrouter",
+    )
+    vision_key = "OPENAI_API_KEY" if vision_provider == "openai" else "OPENROUTER_API_KEY"
+
     required = {
         "APIFY_TOKEN": "Instagram 抓取",
-        "OPENROUTER_API_KEY": "OpenRouter（篩圖 + 辨識服裝）",
+        vision_key: f"{vision_provider} vision（篩圖 + 辨識服裝）",
         "HF_TOKEN": "BGE-M3 語意向量",
         "DB_HOST": "RDS",
         "DB_NAME": "RDS",

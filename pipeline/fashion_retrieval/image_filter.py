@@ -40,7 +40,7 @@ import numpy as np
 
 from PIL import Image
 from dotenv import load_dotenv
-from .openrouter_client import chat_completion, configured_model, image_content
+from .vision_client import configured_model, image_content, vision_completion
 
 
 # ============================================================
@@ -332,10 +332,10 @@ def filter_items(
         content.append(image_content(media_type, image_base64))
 
     # ========================================================
-    # Call OpenRouter (Nemotron 3.5 Super VL preferred; free multimodal fallback)
+    # Call the configured vision provider (paid OpenAI by default)
     # ========================================================
 
-    response_text, actual_model = chat_completion(
+    response_text, actual_model = vision_completion(
         max_tokens=2048,
         messages=[
             {
@@ -359,7 +359,7 @@ def filter_items(
 
         print(
             "\n[Image Filter] "
-            f"Could not parse OpenRouter response ({actual_model})."
+            f"Could not parse vision response ({actual_model})."
         )
 
         print(

@@ -68,6 +68,9 @@ function checkEnv(): Check {
     pipelineTokenSet: Boolean(process.env.PIPELINE_TOKEN),
     openRouterKeySet: Boolean(process.env.OPENROUTER_API_KEY),
     openRouterModel: process.env.OPENROUTER_MODEL ?? "nvidia/nemotron-3.5-super-vl:free",
+    openAiKeySet: Boolean(process.env.OPENAI_API_KEY),
+    adviceProvider: process.env.ADVICE_PROVIDER ?? (process.env.OPENAI_API_KEY ? "openai" : "chat provider"),
+    adviceModel: process.env.ADVICE_MODEL ?? "gpt-5.4-mini",
   };
 }
 

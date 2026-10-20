@@ -151,9 +151,12 @@ def health() -> dict:
     Next.js 的設定頁可以打這支。
     """
 
+    vision_provider = os.getenv("VISION_PROVIDER", "openai" if os.getenv("OPENAI_API_KEY") else "openrouter")
+    vision_key = "OPENAI_API_KEY" if vision_provider == "openai" else "OPENROUTER_API_KEY"
+
     required_env = [
         "APIFY_TOKEN",
-        "OPENROUTER_API_KEY",
+        vision_key,
         "HF_TOKEN",
         "DB_HOST",
         "DB_NAME",
@@ -204,12 +207,16 @@ def health() -> dict:
         "ok": db_ok and not missing and not missing_columns,
         "missing_env": missing,
         "llm": {
-            "provider": "openrouter",
-            "model": os.getenv(
-                "OPENROUTER_VISION_MODEL",
-                os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-super-vl:free"),
+            "provider": vision_provider,
+            "model": (
+                os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini")
+                if vision_provider == "openai"
+                else os.getenv(
+                    "OPENROUTER_VISION_MODEL",
+                    os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-super-vl:free"),
+                )
             ),
-            "fallback": "openrouter/free",
+            "fallback": "openrouter/free" if os.getenv("OPENROUTER_API_KEY") else None,
         },
         "database": {
             "ok": db_ok,

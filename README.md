@@ -50,7 +50,7 @@ One incoming link turns into **several rows**: Reel → frame extraction → fil
 One repo, two processes (Next.js + Python), one `.env`.
 
 ```bash
-cp .env.example .env    # LINE keys / DB_* / APIFY_TOKEN / HF_TOKEN / OPENROUTER_API_KEY
+cp .env.example .env    # LINE keys / DB_* / APIFY_TOKEN / HF_TOKEN / OPENAI_API_KEY / OPENROUTER_API_KEY
 ```
 
 Run every command from the **project root**.

@@ -59,7 +59,7 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from .openrouter_client import chat_completion, configured_model, image_content
+from .vision_client import configured_model, image_content, vision_completion
 
 MODEL = configured_model()
 
@@ -531,10 +531,10 @@ def analyze_image(
     )
 
     # ========================================================
-    # Call OpenRouter (Nemotron 3.5 Super VL preferred; free multimodal fallback)
+    # Call the configured vision provider (paid OpenAI by default)
     # ========================================================
 
-    raw_response, actual_model = chat_completion(
+    raw_response, actual_model = vision_completion(
         max_tokens=2048,
         messages=[
             {
@@ -562,7 +562,7 @@ def analyze_image(
     except Exception:
         print(
             f"[Fashion Analyzer] Invalid response "
-            f"from OpenRouter: {actual_model}"
+            f"from vision provider: {actual_model}"
         )
 
         print(

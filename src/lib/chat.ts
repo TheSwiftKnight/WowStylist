@@ -298,6 +298,74 @@ async function callOpenAI(
   }
 }
 
+const DEFAULT_ADVICE_MODEL = "gpt-5.4-mini";
+
+/**
+ * 穿搭建議專用的 OpenAI Responses API client。
+ *
+ * 這段跟對話分類器分開：分類與圖片仍可走 OpenRouter，
+ * 只有需要穩定讀懂兩件商品描述的最後一段建議走 OpenAI。
+ */
+async function callOpenAIAdvice(
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens = 800
+): Promise<LLMResult> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.ADVICE_MODEL?.trim() || DEFAULT_ADVICE_MODEL;
+  if (!apiKey) return { content: null, reason: "NO_API_KEY: OPENAI_API_KEY 未設定" };
+
+  try {
+    const res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        instructions: systemPrompt,
+        input: userMessage,
+        max_output_tokens: maxTokens,
+        reasoning: { effort: "none" },
+        text: { verbosity: "low" },
+      }),
+      signal: AbortSignal.timeout(Number(process.env.ADVICE_TIMEOUT_MS || 20_000)),
+    });
+
+    const raw = await res.text();
+    let data: {
+      error?: { message?: string };
+      output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+    } = {};
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return { content: null, reason: `OPENAI_NON_JSON HTTP_${res.status}: ${raw.slice(0, 240)}` };
+    }
+
+    if (!res.ok || data.error) {
+      return {
+        content: null,
+        reason: `OPENAI_HTTP_${res.status}: ${data.error?.message ?? raw.slice(0, 240)}`,
+      };
+    }
+
+    const content = (data.output ?? [])
+      .flatMap((item) => item.content ?? [])
+      .filter((part) => part.type === "output_text")
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+
+    return content
+      ? { content, reason: "ok" }
+      : { content: null, reason: "OPENAI_EMPTY_OUTPUT" };
+  } catch (err) {
+    return { content: null, reason: `OPENAI_FETCH_ERROR: ${String(err)}` };
+  }
+}
+
 /**
  * 決定要用哪個 provider。
  *
@@ -1022,7 +1090,7 @@ function compactAdvicePart(value: string | null | undefined, maxLength: number):
     .slice(0, maxLength);
 }
 
-/** OpenRouter 暫時 timeout / rate limit 時的保底，避免推薦卡片後面整段消失。 */
+/** LLM 暫時失敗時的保底；仍要根據這一套的實際商品內容生成。 */
 function fallbackOutfitAdvice(ctx: AdviceContext): string {
   const need = compactAdvicePart(ctx.userQuery.split("\n")[0], 32);
   const tip = compactAdvicePart(
@@ -1033,9 +1101,21 @@ function fallbackOutfitAdvice(ctx: AdviceContext): string {
   const opening = need
     ? `這套以${ctx.styleZh}回應你「${need}」的需求。`
     : `這套以${ctx.styleZh}為主軸，整體方向會比較一致。`;
-  const pieces = ctx.pickedTop && ctx.pickedBottom
-    ? "卡片中的上衣與下著維持同一風格，直接成套穿就有完整度。"
-    : "上下身維持同一個風格方向，會讓造型更完整。";
+  const top = compactAdvicePart(
+    ctx.pickedTop?.description ?? ctx.pickedTop?.title,
+    42
+  );
+  const bottom = compactAdvicePart(
+    ctx.pickedBottom?.description ?? ctx.pickedBottom?.title,
+    42
+  );
+  const pieces = top && bottom
+    ? `上身的「${top}」搭配下身的「${bottom}」，能把這套的重點收在實際單品上。`
+    : top
+      ? `上身以「${top}」為造型重點，下身保持簡潔即可。`
+      : bottom
+        ? `下身的「${bottom}」是這套的主角，上身保持俐落會更有層次。`
+        : "上下身維持同一個風格方向，會讓造型更完整。";
   const technique = tip ? `搭配時記得「${tip}」。` : "搭配時把視覺重點留在一處，避免元素彼此搶戲。";
 
   return `${opening}${pieces}${technique}最後整理下襬與腰線比例，用簡潔配件收尾會更俐落。`;
@@ -1051,20 +1131,33 @@ export async function writeOutfitAdvice(
   ctx: AdviceContext,
   provider?: string
 ): Promise<string> {
-  const { content, reason } = await callLLM(
-    provider ?? resolveProvider(),
-    ADVICE_SYSTEM_PROMPT,
-    buildAdviceMessage(ctx),
-    800,
-    0.6, // 建議要讀起來像人話，不要像分類器
-  );
+  const adviceProvider = provider ?? process.env.ADVICE_PROVIDER?.trim().toLowerCase() ??
+    (process.env.OPENAI_API_KEY ? "openai" : resolveProvider());
+  const prompt = buildAdviceMessage(ctx);
+  let result = adviceProvider === "openai"
+    ? await callOpenAIAdvice(ADVICE_SYSTEM_PROMPT, prompt, 800)
+    : await callLLM(adviceProvider, ADVICE_SYSTEM_PROMPT, prompt, 800, 0.6);
 
-  if (!content) {
-    console.warn(`[chat] 穿搭建議產生失敗（${reason}），改用本機保底建議`);
+  // 不預設偷偷切回免費模型；只有明確設定時才啟用備援。
+  if (
+    !result.content &&
+    adviceProvider === "openai" &&
+    process.env.ADVICE_FALLBACK_PROVIDER?.trim().toLowerCase() === "openrouter" &&
+    process.env.OPENROUTER_API_KEY
+  ) {
+    console.warn(`[chat] OpenAI 穿搭建議失敗（${result.reason}），改試 OpenRouter`);
+    result = await callLLM("openrouter", ADVICE_SYSTEM_PROMPT, prompt, 800, 0.6);
+  }
+
+  if (!result.content) {
+    console.warn(`[chat] 穿搭建議產生失敗（${result.reason}），改用本機保底建議`);
     return fallbackOutfitAdvice(ctx);
   }
-  console.log(`[chat] 穿搭建議完成，對應第 ${ctx.outfitIndex} 套（吻合度 ${ctx.matchScore.toFixed(3)}）`);
-  return content.trim();
+  console.log(
+    `[chat] 穿搭建議完成 provider=${adviceProvider} ` +
+    `對應第 ${ctx.outfitIndex} 套（吻合度 ${ctx.matchScore.toFixed(3)}）`
+  );
+  return result.content.trim();
 }
 
 /** ScoredOutfit → 給 UI 的精簡結構（丟掉 embedding 等內部欄位）。 */

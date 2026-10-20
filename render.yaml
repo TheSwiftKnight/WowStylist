@@ -28,6 +28,17 @@ services:
         value: nvidia/nemotron-3.5-super-vl:free
       - key: OPENROUTER_TIMEOUT_SECONDS
         value: "60"
+      # 付費 OpenAI 作為圖片篩選與服飾辨識主力；OpenRouter 只作備援
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: VISION_PROVIDER
+        value: openai
+      - key: OPENAI_VISION_MODEL
+        value: gpt-5.4-mini
+      - key: OPENAI_VISION_TIMEOUT_SECONDS
+        value: "90"
+      - key: VISION_FALLBACK_PROVIDER
+        value: ""
       # 沒填的話 fashion_encoder.py 在 import 時就 raise，服務起不來
       - key: HF_TOKEN
         sync: false
